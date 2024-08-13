@@ -121,6 +121,8 @@ for reseller_name, clients in resellers_data.items():
             csvwriter.writerow([])  # Blank line between sections
             csvwriter.writerow([])  # Blank line between sections
             csvwriter.writerow([f"Client Name: {client_name}"])
+            client_id = calls[0]['client_id']  # Get the client_id from the first call
+            csvwriter.writerow([f"Client ID: {client_id}"])
             csvwriter.writerow([f"Total Call Time: {client_hours} hours, {client_minutes} minutes, {client_seconds} seconds"])
             csvwriter.writerow([f"Total Reseller Cost: ${client_total_reseller_cost:.2f}"])
             csvwriter.writerow([f"Total Client Cost: ${client_total_client_cost:.2f}"])
