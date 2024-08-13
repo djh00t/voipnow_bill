@@ -177,10 +177,10 @@ for reseller_name, clients in resellers_data.items():
             client_seconds = client_total_duration % 60
 
 
-            csvwriter.writerow(["Total Client DIDs:", f"{total_client_dids}"])
-            csvwriter.writerow([])  # Blank line between client sections
             client_id = calls[0]['client_id']  # Get the client_id from the first call
             total_client_dids = calls[0]['client_did_count']  # Get the client_did_count from the first call
+            csvwriter.writerow(["Total Client DIDs:", f"{total_client_dids}"])
+            csvwriter.writerow([])  # Blank line between client sections
             client_id = calls[0]['client_id']  # Get the client_id from the first call
             csvwriter.writerow(["Client Name:", f"{client_name}", "Client ID:", f"{client_id}"])
             csvwriter.writerow(["Client Call Time:", f"{client_hours} hours, {client_minutes} minutes, {client_seconds} seconds"])
