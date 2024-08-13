@@ -138,6 +138,11 @@ for row in rows:
         cursor.execute("SELECT COUNT(*) AS did_count FROM voipnow.channel_did WHERE reseller_id = %s", (reseller_id,))
         did_count = cursor.fetchone()['did_count']
         reseller_did_counts[reseller_name] = did_count
+    # Query the number of extensions for the reseller
+    cursor.execute("SELECT COUNT(DISTINCT extension_number) AS extension_count FROM call_history WHERE client_reseller_id = %s", (reseller_id,))
+    extension_count = cursor.fetchone()['extension_count']
+    reseller_did_counts[reseller_name] = {'did_count': did_count, 'extension_count': extension_count}
+
     if client_name not in resellers_data[reseller_name]:
         resellers_data[reseller_name][client_name] = []
     resellers_data[reseller_name][client_name].append(row)
@@ -145,6 +150,11 @@ for row in rows:
     cursor.execute("SELECT COUNT(*) AS did_count FROM voipnow.channel_did WHERE client_id = %s", (row['client_id'],))
     client_did_count = cursor.fetchone()['did_count']
     row['client_did_count'] = client_did_count
+
+    # Query the number of extensions for the client
+    cursor.execute("SELECT COUNT(DISTINCT extension_number) AS extension_count FROM call_history WHERE client_client_id = %s", (row['client_id'],))
+    client_extension_count = cursor.fetchone()['extension_count']
+    row['client_extension_count'] = client_extension_count
 
 # Generate CSV files
 for reseller_name, clients in resellers_data.items():
@@ -165,7 +175,8 @@ for reseller_name, clients in resellers_data.items():
         csvwriter.writerow(["Total Call Time:", f"{total_hours} hours, {total_minutes} minutes, {total_seconds} seconds"])
         csvwriter.writerow(["Total Client Billables:", f"${total_client_cost:.2f}"])
         csvwriter.writerow(["Total Reseller Cost:", f"${total_reseller_cost:.2f}"])
-        csvwriter.writerow(["Total Reseller DIDs:", f"{reseller_did_counts[reseller_name]}"])
+        csvwriter.writerow(["Total Reseller DIDs:", f"{reseller_did_counts[reseller_name]['did_count']}"])
+        csvwriter.writerow(["Total Reseller Extensions:", f"{reseller_did_counts[reseller_name]['extension_count']}"])
         
         # Write data grouped by client and extension
         for client_name, calls in clients.items():
@@ -185,6 +196,7 @@ for reseller_name, clients in resellers_data.items():
             csvwriter.writerow(["Client Call Time:", f"{client_hours} hours, {client_minutes} minutes, {client_seconds} seconds"])
             csvwriter.writerow(["Client Billables:", f"${client_total_client_cost:.2f}"])
             csvwriter.writerow(["Client DIDs:", f"{total_client_dids}"])
+            csvwriter.writerow(["Client Extensions:", f"{calls[0]['client_extension_count']}"])
             csvwriter.writerow(["Reseller Cost:", f"${client_total_reseller_cost:.2f}"])
             csvwriter.writerow([])  # Blank line between client sections
 
