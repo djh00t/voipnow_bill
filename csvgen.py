@@ -138,10 +138,31 @@ for row in rows:
         cursor.execute("SELECT COUNT(*) AS did_count FROM voipnow.channel_did WHERE reseller_id = %s", (reseller_id,))
         did_count = cursor.fetchone()['did_count']
         reseller_did_counts[reseller_name] = did_count
-    # Query the number of extensions for the reseller
-    cursor.execute("SELECT COUNT(DISTINCT extension_number) AS extension_count FROM call_history WHERE client_reseller_id = %s", (reseller_id,))
-    extension_count = cursor.fetchone()['extension_count']
-    reseller_did_counts[reseller_name] = {'did_count': did_count, 'extension_count': extension_count}
+    # Query the number of extensions for the reseller using the provided query
+    cursor.execute("""
+        SELECT 
+            reseller.id AS reseller_id,
+            COUNT(DISTINCT extension.extended_number) AS extension_count
+        FROM 
+            voipnow.extension AS extension
+        LEFT JOIN 
+            voipnow.client AS client ON extension.client_id = CAST(client.id AS UNSIGNED)
+        LEFT JOIN 
+            voipnow.client AS parent_client ON client.parent_client_id = parent_client.id AND client.level = 100
+        JOIN 
+            voipnow.client AS reseller ON 
+                (client.level = 50 AND LPAD(client.parent_client_id, 4, '0') = LPAD(reseller.id, 4, '0'))
+                OR 
+                (client.level = 100 AND LPAD(parent_client.parent_client_id, 4, '0') = LPAD(reseller.id, 4, '0'))
+        WHERE 
+            reseller.level = 10  -- Reseller level
+        GROUP BY 
+            reseller.id
+        ORDER BY 
+            reseller_id;
+    """)
+    reseller_extension_counts = {row['reseller_id']: row['extension_count'] for row in cursor.fetchall()}
+    reseller_did_counts[reseller_name] = {'did_count': did_count, 'extension_count': reseller_extension_counts.get(reseller_id, 0)}
 
     if client_name not in resellers_data[reseller_name]:
         resellers_data[reseller_name][client_name] = []
@@ -151,10 +172,26 @@ for row in rows:
     client_did_count = cursor.fetchone()['did_count']
     row['client_did_count'] = client_did_count
 
-    # Query the number of extensions for the client
-    cursor.execute("SELECT COUNT(DISTINCT extension_number) AS extension_count FROM call_history WHERE client_client_id = %s", (row['client_id'],))
-    client_extension_count = cursor.fetchone()['extension_count']
-    row['client_extension_count'] = client_extension_count
+    # Query the number of extensions for the client using the provided query
+    cursor.execute("""
+        SELECT 
+            COALESCE(parent_client.id, client.id) AS client_id,
+            COUNT(DISTINCT extension.extended_number) AS extension_count
+        FROM 
+            voipnow.extension AS extension
+        LEFT JOIN 
+            voipnow.client AS client ON extension.client_id = CAST(client.id AS UNSIGNED)
+        LEFT JOIN 
+            voipnow.client AS parent_client ON client.parent_client_id = parent_client.id AND client.level = 100
+        WHERE 
+            client.level = 50 OR client.level = 100  -- Client or User level
+        GROUP BY 
+            COALESCE(parent_client.id, client.id)
+        ORDER BY 
+            client_id;
+    """)
+    client_extension_counts = {row['client_id']: row['extension_count'] for row in cursor.fetchall()}
+    row['client_extension_count'] = client_extension_counts.get(row['client_id'], 0)
 
 # Generate CSV files
 for reseller_name, clients in resellers_data.items():
