@@ -150,13 +150,11 @@ for reseller_name, clients in resellers_data.items():
         total_minutes = (total_duration % 3600) // 60
         total_seconds = total_duration % 60
         
-        csvwriter.writerow([f"Company Name: {reseller_name}"])
         reseller_id = next(iter(clients.values()))[0]['reseller_id']  # Get the reseller_id from the first client's first call
-        csvwriter.writerow([f"Reseller ID: {reseller_id}"])
-        csvwriter.writerow([f"Total Call Time: {total_hours} hours, {total_minutes} minutes, {total_seconds} seconds"])
-        csvwriter.writerow([f"Total Reseller Cost: ${total_reseller_cost:.2f}"])
-        csvwriter.writerow([f"Total Client Cost: ${total_client_cost:.2f}"])
-        csvwriter.writerow([])  # Blank line between sections
+        csvwriter.writerow(["Company Name:", f"{reseller_name}", f"Reseller ID:", f"{reseller_id}"])
+        csvwriter.writerow(["Total Call Time:", f"{total_hours} hours, {total_minutes} minutes, {total_seconds} seconds"])
+        csvwriter.writerow(["Total Client Billables:", f"${total_client_cost:.2f}"])
+        csvwriter.writerow(["Total Reseller Cost:", f"${total_reseller_cost:.2f}"])
         
         # Write data grouped by client and extension
         for client_name, calls in clients.items():
@@ -167,14 +165,13 @@ for reseller_name, clients in resellers_data.items():
             client_minutes = (client_total_duration % 3600) // 60
             client_seconds = client_total_duration % 60
 
-            csvwriter.writerow([])  # Blank line between sections
-            csvwriter.writerow([])  # Blank line between sections
-            csvwriter.writerow([f"Client Name: {client_name}"])
+
+            csvwriter.writerow([])  # Blank line between client sections
             client_id = calls[0]['client_id']  # Get the client_id from the first call
-            csvwriter.writerow([f"Client ID: {client_id}"])
-            csvwriter.writerow([f"Total Call Time: {client_hours} hours, {client_minutes} minutes, {client_seconds} seconds"])
-            csvwriter.writerow([f"Total Reseller Cost: ${client_total_reseller_cost:.2f}"])
-            csvwriter.writerow([f"Total Client Cost: ${client_total_client_cost:.2f}"])
+            csvwriter.writerow(["Client Name:", f"{client_name}", "Client ID:", f"{client_id}"])
+            csvwriter.writerow(["Client Call Time:", f"{client_hours} hours, {client_minutes} minutes, {client_seconds} seconds"])
+            csvwriter.writerow(["Client Billables:", f"${client_total_client_cost:.2f}"])
+            csvwriter.writerow(["Reseller Cost:", f"${client_total_reseller_cost:.2f}"])
             csvwriter.writerow([])  # Blank line between client sections
 
             current_extension = None
@@ -195,14 +192,13 @@ for reseller_name, clients in resellers_data.items():
                     extension_seconds = extension_total_duration % 60
 
                     current_extension = extension
-                    csvwriter.writerow([f"Phone number: {call['phone_number']}"])
-                    csvwriter.writerow([f"Phone number: {call['phone_number']}"])
-                    csvwriter.writerow([f"Extension: {extension}"])
-                    csvwriter.writerow([f"Billing Plan: {call['plan']}"])
-                    csvwriter.writerow([f"Billing Plan: {call['plan']}"])
-                    csvwriter.writerow([f"Total Call Time: {extension_hours} hours, {extension_minutes} minutes, {extension_seconds} seconds"])
-                    csvwriter.writerow([f"Total Reseller Cost: ${extension_total_reseller_cost:.2f}"])
-                    csvwriter.writerow([f"Total Client Cost: ${extension_total_client_cost:.2f}"])
+                    #csvwriter.writerow([])  # Blank line between client sections
+                    csvwriter.writerow(["Phone Number:", f"{call['phone_number']}", "Extension:", f"{call['extension']}"])
+                    csvwriter.writerow(["Plan:", f"{call['plan']}"])
+                    csvwriter.writerow(["Call Time:", f"{extension_hours} hours, {extension_minutes} minutes, {extension_seconds} seconds"])
+                    csvwriter.writerow(["Client Billables:", f"${extension_total_client_cost:.2f}"])
+                    csvwriter.writerow(["Reseller Cost:", f"${extension_total_reseller_cost:.2f}"])
+                    csvwriter.writerow(["Call Detail Records (CDRs)"])
                     csvwriter.writerow(["Start", "Source", "Destination", "Duration", "Reseller Cost", "Client Cost", "Caller IP", "Call ID", "Hangup Cause"])
 
                 csvwriter.writerow([
