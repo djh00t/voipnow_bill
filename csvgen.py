@@ -40,11 +40,15 @@ try:
             cursor.execute(query)
             rows = cursor.fetchall()
             logging.info("Query executed successfully.")
+except mysql.connector.Error as err:
+    logging.error(f"Error: {err}")
+    exit(1)
 
 def process_billing_plan(billingplan):
     return UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(billingplan), ' - inbound', '')), '&', 'AND'), ' ', ''))
 
-# Define the query
+def process_billing_plan(billingplan):
+    return UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(billingplan), ' - inbound', '')), '&', 'AND'), ' ', ''))
 query = f"""
 SELECT
     call_history.client_reseller_id AS reseller_id,
@@ -211,6 +215,8 @@ for reseller_name, clients in resellers_data.items():
     try:
         with open(filename, 'w', newline='') as csvfile:
             csvwriter = csv.writer(csvfile)
+    except IOError as e:
+        logging.error(f"File error: {e}")
         
         # Write reseller summary
         total_reseller_cost = sum(call['reseller_cost'] for client_calls in clients.values() for call in client_calls)
