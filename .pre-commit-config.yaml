@@ -1,0 +1,107 @@
+fail_fast: true
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-case-conflict
+      - id: check-ast
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-docstring-first
+      - id: check-executables-have-shebangs
+      - id: check-yaml
+      - id: end-of-file-fixer
+        exclude: |
+          (?x)^(
+            .*.terraform/.*|
+            tmpl\/.*.sops\.ya?ml
+            )$
+      - id: mixed-line-ending
+      - id: trailing-whitespace
+        args:
+          - --markdown-linebreak-ext=md
+
+  #- repo: https://github.com/hhatto/autopep8
+  #  rev: v2.3.1
+  #  hooks:
+  #    - id: autopep8
+  #      args:
+  #        - --aggressive
+  #        - --aggressive
+  #        - --aggressive
+  #        - --in-place
+  #        - --list-fixes
+  #        - --max-line-length=79
+  #        - --pep8-passes=5
+
+  # YAPF configuration is in pyproject.toml
+  #- repo: https://github.com/google/yapf
+  #  rev: v0.40.2
+  #  hooks:
+  #  - id: yapf
+  #    args: ['--in-place', '--verbose', '--style', 'google']
+
+  # Black configuration is in pyproject.toml
+  - repo: https://github.com/psf/black
+    rev: 24.4.2
+    hooks:
+      - id: black
+        language_version: python3
+        args: ['--config=pyproject.toml']
+
+  - repo: https://github.com/pycqa/flake8
+    rev: 7.1.0
+    hooks:
+      - id: flake8
+        args: ['--config=pyproject.toml']
+        #additional_dependencies: [
+        #  dlint,                      # Tool for encouraging best coding practices and helping ensure Python code is secure.
+        #  flake8-alphabetize,         # Checking the order of import statements and the __all__ list.
+        #]
+
+
+
+###
+###     - repo: https://github.com/pre-commit/mirrors-mypy
+###       rev: v1.10.1  # Use the latest stable release
+###       hooks:
+###         - id: mypy
+###
+###     - repo: https://github.com/PyCQA/isort
+###       rev: 5.13.2  # Use the latest stable release
+###       hooks:
+###         - id: isort
+###           name: isort (python)  # Optional, customize hook name
+###           args: ['--profile', 'black']  # Example of passing arguments to isort
+###           language_version: python3  # Specify the Python version
+###
+###     - repo: https://github.com/pylint-dev/pylint
+###       rev: v3.2.5  # Use the latest stable release
+###       hooks:
+###         - id: pylint
+###           args: ['--disable=R,C']  # Example of disabling specific pylint categories
+
+  - repo: https://github.com/djh00t/sops-pre-commit
+    rev: v0.0.2f
+    hooks:
+      - id: kubernetes-secret
+        exclude: (tmpl\/.*.sops\.ya?ml|knative\-operator\.ya?ml)
+      - id: aws-access-key-id
+      - id: aws-secret-access-key
+      - id: rsa-private-key
+      - id: ssh-private-key
+      - id: github-access-token
+      - id: generic-api-key
+      - id: gcp-api-key
+      - id: jwt
+      - id: slack-webhook-url
+      - id: google-oauth-client-secret
+
+  - repo: https://github.com/gruntwork-io/pre-commit
+    rev: v0.1.23
+    hooks:
+      - id: terraform-fmt
+      - id: terraform-validate
+      - id: tflint
