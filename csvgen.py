@@ -127,11 +127,17 @@ year_month_str = f"{year}{month:02d}"
 
 # Process data per reseller and client
 resellers_data = {}
+reseller_did_counts = {}
 for row in rows:
     reseller_name = row['reseller_name']
     client_name = row['client_name']
+    reseller_id = row['reseller_id']
     if reseller_name not in resellers_data:
         resellers_data[reseller_name] = {}
+        # Query the number of DIDs for the reseller
+        cursor.execute("SELECT COUNT(*) AS did_count FROM voipnow.channel_did WHERE reseller_id = %s", (reseller_id,))
+        did_count = cursor.fetchone()['did_count']
+        reseller_did_counts[reseller_name] = did_count
     if client_name not in resellers_data[reseller_name]:
         resellers_data[reseller_name][client_name] = []
     resellers_data[reseller_name][client_name].append(row)
@@ -155,6 +161,7 @@ for reseller_name, clients in resellers_data.items():
         csvwriter.writerow(["Total Call Time:", f"{total_hours} hours, {total_minutes} minutes, {total_seconds} seconds"])
         csvwriter.writerow(["Total Client Billables:", f"${total_client_cost:.2f}"])
         csvwriter.writerow(["Total Reseller Cost:", f"${total_reseller_cost:.2f}"])
+        csvwriter.writerow(["Total Reseller DIDs:", f"{reseller_did_counts[reseller_name]}"])
         
         # Write data grouped by client and extension
         for client_name, calls in clients.items():
