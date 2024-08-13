@@ -45,7 +45,7 @@ SELECT
     call_history.duration, 
     call_history.costres AS reseller_cost,
     call_history.costcl AS client_cost,
-    call_history.caller_info AS caller_ip,
+    SUBSTRING_INDEX(call_history.caller_info, ':', 1) AS caller_ip,
     call_history.callid,
     call_history.hangupcause
 FROM call_history
