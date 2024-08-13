@@ -1,0 +1,4 @@
+.aider*
+csv/**
+**/.cache
+.env
