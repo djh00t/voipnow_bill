@@ -180,13 +180,13 @@ for reseller_name, clients in resellers_data.items():
             current_extension = None
 
             for call in calls:
-                extension = call['source']
+                extension = call['extension']
                 if current_extension != extension:
                     if current_extension is not None:
                         csvwriter.writerow([])  # Blank line between extensions
 
                     # Calculate totals for the current extension
-                    extension_calls = [c for c in calls if c['source'] == extension]
+                    extension_calls = [c for c in calls if c['extension'] == extension]
                     extension_total_duration = sum(c['duration'] for c in extension_calls)
                     extension_total_reseller_cost = sum(c['reseller_cost'] for c in extension_calls)
                     extension_total_client_cost = sum(c['client_cost'] for c in extension_calls)
@@ -195,7 +195,11 @@ for reseller_name, clients in resellers_data.items():
                     extension_seconds = extension_total_duration % 60
 
                     current_extension = extension
+                    csvwriter.writerow([f"Phone number: {call['phone_number']}"])
+                    csvwriter.writerow([f"Phone number: {call['phone_number']}"])
                     csvwriter.writerow([f"Extension: {extension}"])
+                    csvwriter.writerow([f"Billing Plan: {call['plan']}"])
+                    csvwriter.writerow([f"Billing Plan: {call['plan']}"])
                     csvwriter.writerow([f"Total Call Time: {extension_hours} hours, {extension_minutes} minutes, {extension_seconds} seconds"])
                     csvwriter.writerow([f"Total Reseller Cost: ${extension_total_reseller_cost:.2f}"])
                     csvwriter.writerow([f"Total Client Cost: ${extension_total_client_cost:.2f}"])
