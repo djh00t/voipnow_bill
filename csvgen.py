@@ -40,16 +40,6 @@ try:
             cursor.execute(query)
             rows = cursor.fetchall()
             logging.info("Query executed successfully.")
-except mysql.connector.Error as err:
-    logging.error(f"Error: {err}")
-    exit(1)
-
-def process_billing_plan(billingplan):
-    return UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(billingplan), ' - inbound', '')), '&', 'AND'), ' ', ''))
-
-def process_billing_plan(billingplan):
-    return UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(billingplan), ' - inbound', '')), '&', 'AND'), ' ', ''))
-query = f"""
 SELECT
     call_history.client_reseller_id AS reseller_id,
     reseller.company AS reseller_name, 
