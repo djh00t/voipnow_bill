@@ -102,6 +102,8 @@ for reseller_name, clients in resellers_data.items():
         total_seconds = total_duration % 60
         
         csvwriter.writerow([f"Company Name: {reseller_name}"])
+        reseller_id = next(iter(clients.values()))[0]['reseller_id']  # Get the reseller_id from the first client's first call
+        csvwriter.writerow([f"Reseller ID: {reseller_id}"])
         csvwriter.writerow([f"Total Call Time: {total_hours} hours, {total_minutes} minutes, {total_seconds} seconds"])
         csvwriter.writerow([f"Total Reseller Cost: ${total_reseller_cost:.2f}"])
         csvwriter.writerow([f"Total Client Cost: ${total_client_cost:.2f}"])
