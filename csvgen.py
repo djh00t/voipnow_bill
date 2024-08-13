@@ -39,25 +39,74 @@ SELECT
     call_history.client_reseller_id AS reseller_id,
     reseller.company AS reseller_name, 
     call_history.client_client_id AS client_id,
+    client.company AS client_name, 
+    call_history.flow AS direction,
+    REPLACE(
+        CASE 
+            WHEN LOWER(call_history.billingplan) LIKE '% - inbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), ' - inbound', '')), '&', 'AND'), ' ', ''))
+            WHEN LOWER(call_history.billingplan) LIKE '% - outbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), ' - outbound', '')), '&', 'AND'), ' ', ''))
+            WHEN LOWER(call_history.billingplan) LIKE '%inbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), 'inbound', '')), '&', 'AND'), ' ', ''))
+            WHEN LOWER(call_history.billingplan) LIKE '%outbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), 'outbound', '')), '&', 'AND'), ' ', ''))
+            ELSE UPPER(REPLACE(REPLACE(call_history.billingplan, '&', 'AND'), ' ', ''))
+        END, ' ', '') AS base_plan,
+    CASE
+        WHEN call_history.flow = 'out' THEN CONCAT(
+            REPLACE(
+                CASE 
+                    WHEN LOWER(call_history.billingplan) LIKE '% - inbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), ' - inbound', '')), '&', 'AND'), ' ', ''))
+                    WHEN LOWER(call_history.billingplan) LIKE '% - outbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), ' - outbound', '')), '&', 'AND'), ' ', ''))
+                    WHEN LOWER(call_history.billingplan) LIKE '%inbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), 'inbound', '')), '&', 'AND'), ' ', ''))
+                    WHEN LOWER(call_history.billingplan) LIKE '%outbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), 'outbound', '')), '&', 'AND'), ' ', ''))
+                    ELSE UPPER(REPLACE(REPLACE(call_history.billingplan, '&', 'AND'), ' ', ''))
+                END, ' ', ''
+            ), '-OUT'
+        )
+        WHEN call_history.flow = 'in' THEN CONCAT(
+            REPLACE(
+                CASE 
+                    WHEN LOWER(call_history.billingplan) LIKE '% - inbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), ' - inbound', '')), '&', 'AND'), ' ', ''))
+                    WHEN LOWER(call_history.billingplan) LIKE '% - outbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), ' - outbound', '')), '&', 'AND'), ' ', ''))
+                    WHEN LOWER(call_history.billingplan) LIKE '%inbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), 'inbound', '')), '&', 'AND'), ' ', ''))
+                    WHEN LOWER(call_history.billingplan) LIKE '%outbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), 'outbound', '')), '&', 'AND'), ' ', ''))
+                    ELSE UPPER(REPLACE(REPLACE(call_history.billingplan, '&', 'AND'), ' ', ''))
+                END, ' ', ''
+            ), '-IN'
+        )
+        ELSE
+            REPLACE(
+                CASE 
+                    WHEN LOWER(call_history.billingplan) LIKE '% - inbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), ' - inbound', '')), '&', 'AND'), ' ', ''))
+                    WHEN LOWER(call_history.billingplan) LIKE '% - outbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), ' - outbound', '')), '&', 'AND'), ' ', ''))
+                    WHEN LOWER(call_history.billingplan) LIKE '%inbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), 'inbound', '')), '&', 'AND'), ' ', ''))
+                    WHEN LOWER(call_history.billingplan) LIKE '%outbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), 'outbound', '')), '&', 'AND'), ' ', ''))
+                    ELSE UPPER(REPLACE(REPLACE(call_history.billingplan, '&', 'AND'), ' ', ''))
+                END, ' ', ''
+            )
+    END AS plan,
+    call_history.disposion,
     call_history.start, 
-    call_history.extension_number AS source,  
+    call_history.extension_number AS extension,
+    CASE 
+        WHEN call_history.did IS NULL OR call_history.did = '' THEN 'N/A'
+        ELSE call_history.did
+    END AS phone_number,
     call_history.partyid AS destination,
+    call_history.prefix AS charging_zone,
     call_history.duration, 
     call_history.costres AS reseller_cost,
     call_history.costcl AS client_cost,
-    SUBSTRING_INDEX(call_history.caller_info, ':', 1) AS caller_ip,
+    SUBSTRING_INDEX(call_history.caller_info, ':', 1) AS caller_ip, 
     call_history.callid,
     call_history.hangupcause
 FROM call_history
 JOIN client AS reseller ON call_history.client_reseller_id = reseller.id
 JOIN client AS client ON call_history.client_client_id = client.id
 WHERE
-    call_history.disposion = 'ANSWERED'
-    AND (
-        (call_history.flow = 'in' AND call_history.costadmin > 0 AND call_history.costres > 0)
+    (
+		(call_history.disposion = 'ANSWERED' AND call_history.flow = 'in' AND call_history.costadmin > 0 AND call_history.costres > 0)
         OR
-        (call_history.flow = 'out')
-    )
+        (call_history.disposion = 'ANSWERED' AND call_history.flow = 'out' AND call_history.costadmin > 0 AND call_history.costres > 0)
+	)
     AND call_history.calltype != 'local'
     AND call_history.start BETWEEN DATE_SUB(LAST_DAY(NOW() - INTERVAL 1 MONTH), INTERVAL DAY(LAST_DAY(NOW() - INTERVAL 1 MONTH)) - 1 DAY)
                    AND LAST_DAY(NOW() - INTERVAL 1 MONTH)
@@ -65,7 +114,7 @@ ORDER BY
     reseller_name,
     client_name,
     call_history.extension_number,
-    call_history.start ASC
+    call_history.start ASC;
 """
 
 # Execute the query
