@@ -6,7 +6,11 @@
 import mysql.connector
 import csv
 import os
+import logging
 from datetime import datetime, timedelta
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Function to get MySQL credentials
 def get_mysql_credentials():
@@ -22,19 +26,26 @@ def get_last_month():
     last_month = first - timedelta(days=1)
     return last_month.year, last_month.month
 
-# Establish MySQL connection
-username, password = get_mysql_credentials()
-db_connection = mysql.connector.connect(
-    host="localhost",
-    user=username,
-    password=password,
-    database="voipnow"
-)
+try:
+    # Establish MySQL connection
+    username, password = get_mysql_credentials()
+    with mysql.connector.connect(
+        host="localhost",
+        user=username,
+        password=password,
+        database="voipnow"
+    ) as db_connection:
+        with db_connection.cursor(dictionary=True) as cursor:
+            logging.info("Executing query...")
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            logging.info("Query executed successfully.")
 
-cursor = db_connection.cursor(dictionary=True)
+def process_billing_plan(billingplan):
+    return UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(billingplan), ' - inbound', '')), '&', 'AND'), ' ', ''))
 
 # Define the query
-query = """
+query = f"""
 SELECT
     call_history.client_reseller_id AS reseller_id,
     reseller.company AS reseller_name, 
@@ -43,43 +54,43 @@ SELECT
     call_history.flow AS direction,
     REPLACE(
         CASE 
-            WHEN LOWER(call_history.billingplan) LIKE '% - inbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), ' - inbound', '')), '&', 'AND'), ' ', ''))
-            WHEN LOWER(call_history.billingplan) LIKE '% - outbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), ' - outbound', '')), '&', 'AND'), ' ', ''))
-            WHEN LOWER(call_history.billingplan) LIKE '%inbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), 'inbound', '')), '&', 'AND'), ' ', ''))
-            WHEN LOWER(call_history.billingplan) LIKE '%outbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), 'outbound', '')), '&', 'AND'), ' ', ''))
-            ELSE UPPER(REPLACE(REPLACE(call_history.billingplan, '&', 'AND'), ' ', ''))
+            WHEN LOWER(call_history.billingplan) LIKE '% - inbound' THEN {process_billing_plan('call_history.billingplan')}
+            WHEN LOWER(call_history.billingplan) LIKE '% - outbound' THEN {process_billing_plan('call_history.billingplan')}
+            WHEN LOWER(call_history.billingplan) LIKE '%inbound' THEN {process_billing_plan('call_history.billingplan')}
+            WHEN LOWER(call_history.billingplan) LIKE '%outbound' THEN {process_billing_plan('call_history.billingplan')}
+            ELSE {process_billing_plan('call_history.billingplan')}
         END, ' ', '') AS base_plan,
     CASE
         WHEN call_history.flow = 'out' THEN CONCAT(
             REPLACE(
                 CASE 
-                    WHEN LOWER(call_history.billingplan) LIKE '% - inbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), ' - inbound', '')), '&', 'AND'), ' ', ''))
-                    WHEN LOWER(call_history.billingplan) LIKE '% - outbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), ' - outbound', '')), '&', 'AND'), ' ', ''))
-                    WHEN LOWER(call_history.billingplan) LIKE '%inbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), 'inbound', '')), '&', 'AND'), ' ', ''))
-                    WHEN LOWER(call_history.billingplan) LIKE '%outbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), 'outbound', '')), '&', 'AND'), ' ', ''))
-                    ELSE UPPER(REPLACE(REPLACE(call_history.billingplan, '&', 'AND'), ' ', ''))
+                    WHEN LOWER(call_history.billingplan) LIKE '% - inbound' THEN {process_billing_plan('call_history.billingplan')}
+                    WHEN LOWER(call_history.billingplan) LIKE '% - outbound' THEN {process_billing_plan('call_history.billingplan')}
+                    WHEN LOWER(call_history.billingplan) LIKE '%inbound' THEN {process_billing_plan('call_history.billingplan')}
+                    WHEN LOWER(call_history.billingplan) LIKE '%outbound' THEN {process_billing_plan('call_history.billingplan')}
+                    ELSE {process_billing_plan('call_history.billingplan')}
                 END, ' ', ''
             ), '-OUT'
         )
         WHEN call_history.flow = 'in' THEN CONCAT(
             REPLACE(
                 CASE 
-                    WHEN LOWER(call_history.billingplan) LIKE '% - inbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), ' - inbound', '')), '&', 'AND'), ' ', ''))
-                    WHEN LOWER(call_history.billingplan) LIKE '% - outbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), ' - outbound', '')), '&', 'AND'), ' ', ''))
-                    WHEN LOWER(call_history.billingplan) LIKE '%inbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), 'inbound', '')), '&', 'AND'), ' ', ''))
-                    WHEN LOWER(call_history.billingplan) LIKE '%outbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), 'outbound', '')), '&', 'AND'), ' ', ''))
-                    ELSE UPPER(REPLACE(REPLACE(call_history.billingplan, '&', 'AND'), ' ', ''))
+                    WHEN LOWER(call_history.billingplan) LIKE '% - inbound' THEN {process_billing_plan('call_history.billingplan')}
+                    WHEN LOWER(call_history.billingplan) LIKE '% - outbound' THEN {process_billing_plan('call_history.billingplan')}
+                    WHEN LOWER(call_history.billingplan) LIKE '%inbound' THEN {process_billing_plan('call_history.billingplan')}
+                    WHEN LOWER(call_history.billingplan) LIKE '%outbound' THEN {process_billing_plan('call_history.billingplan')}
+                    ELSE {process_billing_plan('call_history.billingplan')}
                 END, ' ', ''
             ), '-IN'
         )
         ELSE
             REPLACE(
                 CASE 
-                    WHEN LOWER(call_history.billingplan) LIKE '% - inbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), ' - inbound', '')), '&', 'AND'), ' ', ''))
-                    WHEN LOWER(call_history.billingplan) LIKE '% - outbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), ' - outbound', '')), '&', 'AND'), ' ', ''))
-                    WHEN LOWER(call_history.billingplan) LIKE '%inbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), 'inbound', '')), '&', 'AND'), ' ', ''))
-                    WHEN LOWER(call_history.billingplan) LIKE '%outbound' THEN UPPER(REPLACE(REPLACE(RTRIM(REPLACE(LOWER(call_history.billingplan), 'outbound', '')), '&', 'AND'), ' ', ''))
-                    ELSE UPPER(REPLACE(REPLACE(call_history.billingplan, '&', 'AND'), ' ', ''))
+                    WHEN LOWER(call_history.billingplan) LIKE '% - inbound' THEN {process_billing_plan('call_history.billingplan')}
+                    WHEN LOWER(call_history.billingplan) LIKE '% - outbound' THEN {process_billing_plan('call_history.billingplan')}
+                    WHEN LOWER(call_history.billingplan) LIKE '%inbound' THEN {process_billing_plan('call_history.billingplan')}
+                    WHEN LOWER(call_history.billingplan) LIKE '%outbound' THEN {process_billing_plan('call_history.billingplan')}
+                    ELSE {process_billing_plan('call_history.billingplan')}
                 END, ' ', ''
             )
     END AS plan,
@@ -117,9 +128,10 @@ ORDER BY
     call_history.start ASC;
 """
 
-# Execute the query
+logging.info("Executing query...")
 cursor.execute(query)
 rows = cursor.fetchall()
+logging.info("Query executed successfully.")
 
 # Get last month and year
 year, month = get_last_month()
@@ -196,8 +208,9 @@ for row in rows:
 # Generate CSV files
 for reseller_name, clients in resellers_data.items():
     filename = f"{year_month_str}_{reseller_name.replace(' ', '_')}_OUTBOUND_CALLS.csv"
-    with open(filename, 'w', newline='') as csvfile:
-        csvwriter = csv.writer(csvfile)
+    try:
+        with open(filename, 'w', newline='') as csvfile:
+            csvwriter = csv.writer(csvfile)
         
         # Write reseller summary
         total_reseller_cost = sum(call['reseller_cost'] for client_calls in clients.values() for call in client_calls)
@@ -276,6 +289,8 @@ for reseller_name, clients in resellers_data.items():
                     call['hangupcause']
                 ])
 
-# Close the database connection
-cursor.close()
-db_connection.close()
+except IOError as e:
+    logging.error(f"File error: {e}")
+except mysql.connector.Error as err:
+    logging.error(f"Error: {err}")
+    exit(1)
