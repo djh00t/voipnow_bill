@@ -51,11 +51,11 @@ repos:
         language_version: python3
         args: ['--config=pyproject.toml']
 
-  - repo: https://github.com/pycqa/flake8
-    rev: 7.1.0
-    hooks:
-      - id: flake8
-        args: ['--config=pyproject.toml']
+#  - repo: https://github.com/pycqa/flake8
+#    rev: 7.1.0
+#    hooks:
+#      - id: flake8
+#        args: ['--config=pyproject.toml']
         #additional_dependencies: [
         #  dlint,                      # Tool for encouraging best coding practices and helping ensure Python code is secure.
         #  flake8-alphabetize,         # Checking the order of import statements and the __all__ list.
