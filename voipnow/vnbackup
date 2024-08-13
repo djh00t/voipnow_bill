@@ -1,0 +1,1748 @@
+#!/usr/bin/env python2.7
+"""
+VoipNow Backup Script (Revised)
+
+This script performs comprehensive backups for a VoipNow system.
+It is designed to be compatible with Python 2.7.5 and incorporates
+improvements in modularity, error handling, and configuration management.
+
+Key Features:
+- MySQL database backup using mysqldump
+- File system backup (full and incremental)
+- Compression (gzip, bzip2)
+- Remote storage support (S3)
+- Email notifications
+- Cleanup of old backups
+- Configurable backup settings
+
+Usage:
+    python vnbackup [--debug] [--verbose]
+
+    --debug: Enable debug mode (overrides configuration file setting)
+    --verbose: Enable verbose output
+
+Dependencies:
+    See requirements.txt for a list of required Python packages.
+
+Notes:
+    - The script assumes AWS credentials are available in environment variables or in '/etc/voipnow/backup.conf'.
+    - S3 region is required in the configuration file.
+(c) 4PSA, 2014 (Revised and Refactored)
+"""
+from __future__ import print_function
+
+import re
+import csv
+import sys
+import datetime
+import smtplib
+import socket
+import MySQLdb
+import subprocess
+import os
+import tarfile
+import gzip
+import hashlib
+import glob
+import fnmatch
+import time
+import bz2
+import random
+import string
+import shutil
+import argparse
+import logging
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+import dotenv
+import warnings
+
+# Suppress boto3 deprecation warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="boto3")
+
+import boto3
+from botocore.exceptions import ClientError
+
+
+def LogMessage(message, level, in_log, in_db):
+    """
+    Log a message to file, database, and/or console based on the specified parameters.
+
+    Args:
+        message (str): The message to be logged.
+        level (str): The severity level of the message ('0' to '7').
+        in_log (str): '1' to write to log file, '0' otherwise.
+        in_db (str): '1' to write to database, '0' otherwise.
+
+    Note:
+        This function may exit the script if the level is '0' or '1'.
+    """
+    global VN
+    severity = {
+        "0": "NOK",
+        "1": "OK",
+        "2": "CRIT",
+        "3": "ERROR",
+        "4": "WARN",
+        "5": "NOTICE",
+        "6": "INFO",
+        "7": "DEBUG",
+    }
+    timestamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+    formatted_message = "%s [%s] %s" % (timestamp, severity[level], message)
+
+    if in_log == "1":
+        with open(conf_bkp["LOG_FILE"], "a+") as log_file:
+            log_file.write("%s\n" % formatted_message)
+    if in_db == "1":
+        VN.log_writer(message, level)
+
+    logging.log(
+        int(level) * 10, message
+    )  # Map our levels to Python logging levels
+
+    if level in ("0", "1"):
+        if "NOTIFY_EMAIL" in conf_bkp:
+            send_email(
+                conf_bkp["NOTIFY_EMAIL"],
+                "VoipNow backup report %s"
+                % datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
+                message,
+            )
+        sys.exit(1)
+
+
+# Parse command-line arguments
+parser = argparse.ArgumentParser(description="VoipNow Backup Script")
+parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+parser.add_argument(
+    "--verbose", action="store_true", help="Enable verbose output"
+)
+args = parser.parse_args()
+
+# Set up logging
+logging.basicConfig(
+    level=logging.DEBUG if args.debug else logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
+
+# Configuration File Paths
+conf_file_bkp = "/etc/voipnow/backup.conf"
+conf_file_paths = "/etc/voipnow/paths.conf"
+conf_file_storage = "/etc/voipnow/storage.conf"
+conf_file_sql_name = "/etc/voipnow/main.conf"
+conf_file_sql_host = "/etc/voipnow/sqldbase.conf"
+conf_file_sql_cred = "/etc/voipnow/.sqldb"
+conf_file_pbx = "/etc/voipnow/pbx.conf"
+conf_file_oldtech = "/etc/voipnow/backup.conf.oldtech"
+conf_file_old = "/etc/voipnow/backup.conf.old"
+
+
+class VoipNowDB:
+    """
+    Class for VoipNow database operations.
+
+    This class handles database connections, logging, and querying for backup-related operations.
+
+    Attributes:
+        db (MySQLdb.connections.Connection): The database connection object.
+        cursor (MySQLdb.cursors.Cursor): The database cursor for executing queries.
+
+    Methods:
+        log_writer: Writes log messages to the database.
+        last_ran: Retrieves the timestamp of the last successful backup.
+    """
+
+    def __init__(self):
+        """
+        Initializes the VoipNowDB class by establishing a database connection.
+
+        Raises:
+            MySQLdb.Error: If unable to connect to the database.
+        """
+        global data
+        try:
+            self.db = MySQLdb.connect(
+                host=data["hostname"],
+                user=data["username"],
+                passwd=data["password"],
+                db=data["dbname"],
+                port=data["port"],
+            )
+            self.db.ping(True)
+            logging.debug("Successfully connected to the database")
+        except MySQLdb.Error as e:
+            logging.error("Could not connect to SQL DB: %s" % str(e))
+            sys.exit(1)
+        self.cursor = self.db.cursor()
+
+    def __del__(self):
+        """
+        Closes the database connection and cursor when the object is destroyed.
+        """
+        try:
+            if hasattr(self, "cursor"):
+                self.cursor.close()
+            if hasattr(self, "db"):
+                self.db.close()
+            logging.debug("Database connection closed")
+        except MySQLdb.Error as e:
+            logging.error("Error closing database connection: %s" % str(e))
+
+    def log_writer(self, message, level):
+        """
+        Writes a log message to the database.
+
+        Args:
+            message (str): The log message to be written.
+            level (str): The log level (e.g., "INFO", "ERROR").
+
+        Raises:
+            SystemExit: If unable to insert the log message into the database.
+        """
+        query = "INSERT INTO backup_nlog VALUES(NULL, %s, %s, %s)"
+        try:
+            self.cursor.execute(
+                query,
+                (
+                    datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                    level,
+                    message,
+                ),
+            )
+            self.db.commit()
+            logging.debug("Log message written to database: %s" % message)
+        except MySQLdb.Error as e:
+            logging.error(
+                "SQL error when inserting into backup_nlog: %s" % str(e)
+            )
+            sys.exit(1)
+
+    def last_ran(self):
+        """
+        Retrieves the timestamp of the last successful backup.
+
+        Returns:
+            datetime.datetime: The timestamp of the last successful backup,
+                               or the current time if no successful backup is found.
+        """
+        query = (
+            "SELECT MAX(time) FROM backup_nlog "
+            "WHERE message LIKE 'VoipNow%backup completed%'"
+        )
+        try:
+            self.cursor.execute(query)
+            row = self.cursor.fetchone()
+            if row and row[0]:
+                logging.debug(
+                    "Last successful backup timestamp: %s" % str(row[0])
+                )
+                return row[0]
+        except MySQLdb.Error as e:
+            logging.error(
+                "Error retrieving last backup timestamp: %s" % str(e)
+            )
+        logging.debug("No previous backup found, using current time")
+        return datetime.datetime.now()
+
+
+def binary_exists(binary_name):
+    """
+    Check if a given binary exists in the system PATH.
+
+    Args:
+        binary_name (str): The name of the binary to check for.
+
+    Returns:
+        bool: True if the binary is found in PATH, False otherwise.
+    """
+    for directory in os.getenv("PATH", "").split(":"):
+        if os.path.exists(os.path.join(directory, binary_name)):
+            logging.debug("Binary %s found in %s" % (binary_name, directory))
+            return True
+    logging.debug("Binary %s not found in PATH" % binary_name)
+    return False
+
+
+def log_message(message, level, in_log, in_db):
+    """
+    Log a message to file, database, and/or console based on the specified parameters.
+
+    Args:
+        message (str): The message to be logged.
+        level (str): The severity level of the message ('0' to '7').
+        in_log (str): '1' to write to log file, '0' otherwise.
+        in_db (str): '1' to write to database, '0' otherwise.
+
+    Note:
+        This function may exit the script if the level is '0' or '1'.
+
+    Global variables:
+        VN: The VoipNowDB instance for database logging.
+        conf_bkp: Configuration dictionary containing email settings.
+    """
+    global VN
+    severity = {
+        "0": "NOK",
+        "1": "OK",
+        "2": "CRIT",
+        "3": "ERROR",
+        "4": "WARN",
+        "5": "NOTICE",
+        "6": "INFO",
+        "7": "DEBUG",
+    }
+    timestamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+    formatted_message = "%s [%s] %s" % (timestamp, severity[level], message)
+
+    if in_log == "1":
+        with open(conf_bkp["LOG_FILE"], "a+") as log_file:
+            log_file.write("%s\n" % formatted_message)
+    if in_db == "1":
+        VN.log_writer(message, level)
+
+    logging.log(
+        int(level) * 10, message
+    )  # Map our levels to Python logging levels
+
+    if level in ("0", "1"):
+        if "NOTIFY_EMAIL" in conf_bkp:
+            send_email(
+                conf_bkp["NOTIFY_EMAIL"],
+                "VoipNow backup report %s"
+                % datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
+                message,
+            )
+        sys.exit(1)
+
+
+# environment checks
+def EnvironmentChecks():
+    # check if another script is already running
+    if os.path.isfile("/var/lock/.vnbackup"):
+        LogMessage(
+            "Backup script is already running or a stale lock exists. Aborting.",
+            "0",
+            "1",
+            "1",
+        )
+    else:
+        LogMessage("Creating lock file", "7", "1", "1")
+        lock_file = open("/var/lock/.vnbackup", "w")
+        lock_file.write("42")
+        lock_file.close()
+
+    # check backup folder is defined
+    if conf_bkp["BACKUP_FOLDER"] == None:
+        LogMessage("Backup folder is not configured", "0", "1", "1")
+
+    # check backup folder and create it if it doesn't exist
+    if not os.path.exists(conf_bkp["BACKUP_FOLDER"]):
+        LogMessage(
+            "Backup folder "
+            + conf_bkp["BACKUP_FOLDER"]
+            + " does not exist, creating it now",
+            "4",
+            "1",
+            "1",
+        )
+        os.makedirs(conf_bkp["BACKUP_FOLDER"])
+    # check config keys
+    for k, v in conf_bkp.iteritems():
+        if v == "CHANGEME":
+            LogMessage(
+                "Key " + k + " in " + conf_file_bkp + " is not configured.",
+                "4",
+                "1",
+                "0",
+            )
+    for k, v in conf_paths.iteritems():
+        if v == "CHANGEME":
+            LogMessage(
+                "Key " + k + " in " + conf_file_paths + " is not configured.",
+                "4",
+                "1",
+                "0",
+            )
+    # check S3 library
+    if (
+        conf_bkp["REMOTE_ACCESS"] == "s3"
+        or conf_bkp["COMPRESS_METHOD"] == "pbzip2"
+    ):
+        if not BinaryExists("easy_install"):
+            LogMessage("easy_install not found, installing", "3", "1", "1")
+            easy_cmd = ["yum", "-y", "python-setuptools"]
+            easy_proc_result = subprocess.Popen(
+                easy_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            ).wait()
+            if not easy_proc_result:
+                LogMessage(
+                    "Could not install python-setuptools, please install it manually and rerun this script",
+                    "0",
+                    "1",
+                    "1",
+                )
+        pip_cmd = ["easy_install", "pip"]
+        pip_proc_result = subprocess.Popen(
+            pip_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        ).wait()
+        if pip_proc_result != 0:
+            LogMessage(
+                'Could not install pip, please install it with "easy_install pip" and rerun this script',
+                "0",
+                "1",
+                "1",
+            )
+        p1 = subprocess.Popen(["pip", "list"], stdout=subprocess.PIPE)
+        p2 = subprocess.Popen(
+            ["grep", "bz2file"], stdin=p1.stdout, stdout=subprocess.PIPE
+        )
+        p1.stdout.close()
+        have_bz2 = p2.communicate()[0]
+        try:
+            have_bz2.strip().index("bz2file")
+        except:
+            LogMessage("Installing bz2file", "4", "1", "1")
+            pbzip_cmd = ["pip", "install", "bz2file"]
+            pbzip_proc_result = subprocess.Popen(
+                pbzip_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            ).wait()
+            if pbzip_proc_result == "0":
+                LogMessage(
+                    'Could not install bz2file which is required for pbzip2 compression, please install it with "pip install bz2file"',
+                    "0",
+                    "1",
+                    "1",
+                )
+            try:
+                global bz2file
+                import bz2file
+            except ImportError:
+                LogMessage(
+                    "Could not import bz2file; please check if it is installed properly or switch to another compression method",
+                    "0",
+                    "1",
+                    "1",
+                )
+        else:
+            LogMessage(
+                "SMTP is not configured properly, not sending email",
+                "3",
+                "1",
+                "1",
+            )
+            LogMessage("bz2file was found", "4", "1", "1")
+
+
+# environment cleanup
+def EnvironmentCleanup():
+    if os.path.isfile("/var/lock/.vnbackup"):
+        os.remove("/var/lock/.vnbackup")
+    else:
+        LogMessage(
+            "Lock file went missing. What happened, Dave ?", "4", "1", "0"
+        )
+
+
+# config file parser
+def ReadConfigFile(config_file):
+    conf_keys = {}
+    conf_data = csv.DictReader(
+        (
+            re.sub(r"[ \t]+", " ", row)
+            for row in open(config_file)
+            if not row.startswith("#")
+        ),
+        ("key", "value"),
+        delimiter=" ",
+    )
+    for i in conf_data:
+        conf_keys[i["key"]] = i["value"]
+    return conf_keys
+
+
+# get MySQL credentials
+def MySQLCredentials():
+    all_ok = 1
+    data = {
+        "hostname": "localhost",
+        "port": 3306,
+        "username": "",
+        "password": "",
+        "dbname": "",
+    }
+
+    try:
+        with open(conf_file_sql_cred, "r") as sql_credentials:
+            credentials = (
+                sql_credentials.readline().replace("\n", "").split(":")
+            )
+            data["username"] = credentials[1]
+            data["password"] = credentials[2]
+    except Exception as e:
+        log_message(
+            "Error reading MySQL credentials: {}".format(str(e)), "0", "0", "0"
+        )
+        all_ok = 0
+
+    try:
+        with open(conf_file_sql_host, "r") as sql_credentials:
+            for file_row in sql_credentials:
+                if file_row.find("DB_MASTER") != -1:
+                    data["hostname"] = file_row.replace("\n", "").split(":")[1]
+    except Exception as e:
+        log_message(
+            "Error reading MySQL host: {}".format(str(e)), "0", "0", "0"
+        )
+        all_ok = 0
+
+    try:
+        with open(conf_file_sql_name, "r") as sql_credentials:
+            for file_row in sql_credentials:
+                if file_row.find("DB_CREDENTIALS") != -1:
+                    data["dbname"] = file_row.replace("\n", "").split(":")[3]
+    except Exception as e:
+        log_message(
+            "Error reading MySQL database name: {}".format(str(e)),
+            "0",
+            "0",
+            "0",
+        )
+        all_ok = 0
+
+    if all_ok == 0:
+        log_message(
+            "Could not get MySQL credentials, stopping backup", "0", "0", "0"
+        )
+    return data
+
+
+# sends email
+def send_email(recipient, subject, body):
+    if not conf_bkp["SMTP_SERVER"] in globals():
+        log_message(
+            "SMTP server not configured, defaulting to localhost",
+            "5",
+            "1",
+            "1",
+        )
+        conf_bkp["SMTP_SERVER"] = "localhost"
+        conf_bkp["SMTP_PORT"] = 25
+        conf_bkp["SMTP_SSL"] = "no"
+    msg = MIMEMultipart()
+    if not conf_bkp["SMTP_FROM"]:
+        log_message(
+            "SMTP From: header not configured, sending email as VoipNow@"
+            + socket.gethostname(),
+            "7",
+            "1",
+            "1",
+        )
+        msg["From"] = "VoipNow Backup <voipnow@" + socket.gethostname() + ">"
+    else:
+        log_message(
+            "SMTP From: header found, sending email as "
+            + conf_bkp["SMTP_FROM"],
+            "7",
+            "1",
+            "1",
+        )
+        msg["From"] = conf_bkp["SMTP_FROM"]
+    msg["To"] = conf_bkp["NOTIFY_EMAIL"]
+    msg["Subject"] = "[" + socket.gethostname() + "] " + subject
+    msg.attach(MIMEText(body, "plain"))
+    if conf_bkp["SMTP_SSL"].lower() == "no":
+        try:
+            smtp_server = smtplib.SMTP(
+                conf_bkp["SMTP_SERVER"], conf_bkp["SMTP_PORT"]
+            )
+        except:
+            log_message(
+                "SMTP problem. Make sure your SMTP server is started and accepts connections.",
+                "3",
+                "1",
+                "1",
+            )
+            return None
+        smtp_server.ehlo_or_helo_if_needed()
+        if conf_bkp["SMTP_AUTHENTICATE"] == 1:
+            smtp_server.login(conf_bkp["SMTP_USER"], conf_bkp["SMTP_PASSWORD"])
+        try:
+            smtp_server.sendmail(
+                conf_bkp["SMTP_FROM"],
+                conf_bkp["NOTIFY_EMAIL"],
+                msg.as_string(),
+            )
+        except:
+            log_message("SMTP server refused my email", "3", "1", "1")
+
+    elif conf_bkp["SMTP_SSL"].lower() == "yes":
+        try:
+            smtp_server = smtplib.SMTP_SSL(
+                conf_bkp["SMTP_SERVER"], conf_bkp["SMTP_PORT"]
+            )
+        except smtplib.socket.timeout as e:
+            log_message(
+                "SMTP timeout, could not connect to your SMTP server",
+                "3",
+                "1",
+                "1",
+            )
+            return None
+        smtp_server.connect()
+        smtp_server.ehlo_or_helo_if_needed()
+        smtp_server.starttls()
+        smtp_server.ehlo_or_helo_if_needed()
+        if conf_bkp["SMTP_AUTHENTICATE"] == 1:
+            smtp_server.login(conf_bkp["SMTP_USER"], conf_bkp["SMTP_PASSWORD"])
+        try:
+            smtp_server.sendmail(
+                conf_bkp["SMTP_FROM"],
+                conf_bkp["NOTIFY_EMAIL"],
+                msg.as_string(),
+            )
+        except smtplib.SMTPRecipientsRefused:
+            log_message("SMTP server refused my email", "3", "1", "1")
+    else:
+        log_message(
+            "SMTP is not configured properly, not sending email", "3", "1", "1"
+        )
+
+
+# checks free space available on backup partition
+def FreeSpaceCheck(backup_path):
+    path = os.path.abspath(backup_path)
+    while not os.path.ismount(path):
+        path = os.path.dirname(path)
+    fs_stats = os.statvfs(path)
+    fs_free = fs_stats.f_bavail * fs_stats.f_frsize
+    fs_total = fs_stats.f_blocks * fs_stats.f_frsize
+    LogMessage(
+        str(int((fs_stats.f_bavail * fs_stats.f_frsize) / 1048576))
+        + " MB free on backup storage",
+        "7",
+        "1",
+        "1",
+    )
+    if int((fs_free * 100 / fs_total)) < int(conf_bkp["MIN_FREE"]):
+        LogMessage(
+            "Less than "
+            + conf_bkp["MIN_FREE"]
+            + "% free space in backup destination",
+            "0",
+            "1",
+            "1",
+        )
+    last_full_size = 0
+    last_db_size = 0
+    try:
+        last_full_file = max(
+            glob.iglob(
+                os.path.join(conf_bkp["BACKUP_FOLDER"], "*_VN_FS_FULL_*")
+            ),
+            key=os.path.getctime,
+        )
+        last_db_file = max(
+            glob.iglob(os.path.join(conf_bkp["BACKUP_FOLDER"], "*_VN_DB_*")),
+            key=os.path.getctime,
+        )
+        last_full_size = os.path.getsize(last_full_file)
+        last_db_size = os.path.getsize(last_db_file)
+    except:
+        LogMessage(
+            "Could not get last backup size for pre-flight checks, only the configured free space percentage will be checked.",
+            "7",
+            "1",
+            "1",
+        )
+    if fs_free < 2 * (last_full_size + last_db_size):
+        LogMessage(
+            "There is not enough space for a full backup - at least twice the size of a full backup is required. Stopping",
+            "0",
+            "1",
+            "1",
+        )
+
+
+# returns an MD5 of the given file
+def MD5File(file_path):
+    md5sum = hashlib.md5()
+    with open(file_path, "rb") as file_to_check:
+        for chunk in iter(
+            lambda: file_to_check.read(128 * md5sum.block_size), b""
+        ):
+            md5sum.update(chunk)
+    return md5sum.hexdigest()
+
+
+### backup functions
+
+
+def MySQLDumper(dump_dir, dump_options):
+    """
+    Perform a MySQL database dump using either xtrabackup or mysqldump.
+
+    This function creates a backup of the MySQL database and saves it to the specified directory.
+    The backup method (xtrabackup or mysqldump) is determined by the 'MYSQL_DUMP' configuration.
+
+    Args:
+        dump_dir (str): The directory where the dump file will be saved.
+        dump_options (List[str]): Additional options for the mysqldump command.
+
+    Global variables:
+        hostname (str): The hostname of the current machine.
+        data (Dict): MySQL credentials and connection information.
+        conf_bkp (Dict): Backup configuration settings.
+        last_backup_db (str): The filename of the last database backup (set by this function).
+
+    Raises:
+        SystemExit: If an error occurs during the backup process.
+
+    Note:
+        This function also compresses the dump file after creation.
+    """
+    global hostname, data, last_backup_db
+
+    # Generate backup filename
+    bkp_date = datetime.datetime.now().strftime("%Y%m%dT%H%M")
+    bkp_file = "{0}_VN_DB_{1}.{2}".format(
+        hostname,
+        bkp_date,
+        "tar" if conf_bkp["MYSQL_DUMP"] == "xtrabackup" else "sql",
+    )
+
+    dump_path = os.path.join(dump_dir, bkp_file)
+    LogMessage("Performing MySQL dump to {0}".format(dump_path), "7", "1", "1")
+
+    data = MySQLCredentials()
+
+    # Prepare backup command based on the configured method
+    if conf_bkp["MYSQL_DUMP"] == "xtrabackup":
+        bkp_cmd = [
+            "innobackupex",
+            "--user={}".format(data["username"]),
+            "--password={}".format(data["password"]),
+            "--stream=tar",
+            conf_bkp["BACKUP_FOLDER"],
+        ]
+    elif conf_bkp["MYSQL_DUMP"] == "mysqldump":
+        bkp_cmd = [
+            "mysqldump",
+            "-u{}".format(data["username"]),
+            "-p{}".format(data["password"]),
+            "-h",
+            data["hostname"],
+            "-P",
+            str(data["port"]),
+        ]
+        bkp_cmd.extend(dump_options)
+        bkp_cmd.extend(["--databases", data["dbname"], "mysql"])
+    else:
+        LogMessage("Unknown value for MYSQL_DUMP key", "0", "1", "1")
+        return
+
+    # Execute backup command
+    with open(dump_path, "w") as dump_file:
+        with open(os.devnull, "w") as FNULL:
+            bkp_proc = subprocess.Popen(
+                bkp_cmd, stdout=dump_file, stderr=FNULL
+            )
+        return_code = bkp_proc.wait()
+
+    if return_code > 0:
+        LogMessage(
+            "Error on backup, code {0}".format(return_code), "0", "1", "1"
+        )
+    else:
+        LogMessage("MySQL dump saved to {0}".format(dump_path), "5", "1", "1")
+
+    # Compress the dump file
+    CompressFile(dump_path)
+
+    # Update the global variable with the compressed filename
+    last_backup_db = bkp_file + compress_ext[conf_bkp["COMPRESS_METHOD"]]
+
+
+# compresses a given file, in-place
+def CompressFile(file):
+    file_in = open(file, "rb")
+    if conf_bkp["COMPRESS_METHOD"] == "bzip2":
+        LogMessage(
+            "Compressing file " + file + " in place with bzip2", "7", "1", "1"
+        )
+        file_out = bz2.BZ2File(file + compress_ext["bzip2"], "wb")
+    elif conf_bkp["COMPRESS_METHOD"] == "pbzip2":
+        try:
+            global bz2file
+            import bz2file
+        except ImportError:
+            LogMessage(
+                "Could not import bz2file; please check if it is installed properly or switch to another compression method",
+                "0",
+                "1",
+                "1",
+            )
+        LogMessage(
+            "Compressing file " + file + " in place with pbzip2", "7", "1", "1"
+        )
+        file_out = bz2file.BZ2File(file + compress_ext["pbzip2"], "wb")
+    else:
+        LogMessage(
+            "Compressing file " + file + " in place with gzip", "7", "1", "1"
+        )
+        file_out = gzip.open(file + compress_ext["gzip"], "wb")
+    file_out.writelines(file_in)
+    file_out.close()
+    file_in.close()
+    LogMessage("Compression complete, removing file " + file, "7", "1", "1")
+    os.remove(file)
+
+
+# compresses a list of folders to a given file; backup_type=0 means full, incremental otherwise
+def CompressFullDirs(file, paths, backup_type):
+    global f_to_exclude
+    global last_backup_time
+    global last_backup_fs
+    LogMessage(
+        "CompressFullDirs called with " + str(backup_type), "7", "1", "1"
+    )
+    try:
+        if conf_bkp["COMPRESS_METHOD"] == "gzip":
+            bkp_tar_file = tarfile.open(
+                file + ".tar" + compress_ext["gzip"], "w:gz"
+            )
+        elif conf_bkp["COMPRESS_METHOD"] == "bzip2":
+            bkp_tar_file = tarfile.open(
+                file + ".tar" + compress_ext["bzip2"], "w:bz2"
+            )
+        else:
+            bkp_tar_file = tarfile.open(file + ".tar", "w")
+    except:
+        LogMessage("Could not create archive file. Exiting.", "2", "1", "1")
+    if backup_type == 0:
+        for each_folder in paths:
+            LogMessage(
+                "Checking folder " + each_folder + " to " + file, "7", "1", "1"
+            )
+            is_excluded = 0
+            for g in f_to_exclude:
+                if each_folder.count(g) > 0:
+                    LogMessage(
+                        each_folder + " matches on excluded " + g,
+                        "7",
+                        "1",
+                        "1",
+                    )
+                    is_excluded = 1
+                    break
+            if not is_excluded:
+                LogMessage(
+                    "Adding all files in folder "
+                    + each_folder
+                    + " to "
+                    + file,
+                    "7",
+                    "1",
+                    "1",
+                )
+                try:
+                    bkp_tar_file.add(each_folder)
+                except:
+                    LogMessage(
+                        "Could not add folder to archive (disk might be full). Exiting.",
+                        "2",
+                        "1",
+                        "1",
+                    )
+        bkp_tar_file.close()
+        if conf_bkp["COMPRESS_METHOD"] == "pbzip2":
+            LogMessage(
+                "Compressing tar " + file + ".tar with pbzip2", "7", "1", "1"
+            )
+            CompressFile(file + ".tar")
+        LogMessage(
+            str(len(paths)) + " folders fully compressed to " + file,
+            "5",
+            "1",
+            "1",
+        )
+    else:
+        LogMessage(
+            "Looking for files modified after "
+            + last_backup_time.strftime("%Y%m%dT%H%M"),
+            "7",
+            "1",
+            "1",
+        )
+        for each_folder in paths:
+            LogMessage(
+                "Checking new files in folder " + each_folder + " to " + file,
+                "7",
+                "1",
+                "1",
+            )
+            for root, dirs, files in os.walk(each_folder):
+                for fname in files:
+                    file_path = os.path.join(root, fname)
+                    try:
+                        st = os.stat(file_path)
+                    except OSError:
+                        LogMessage(
+                            file_path + " cannot be checked.", "7", "1", "1"
+                        )
+                    mtime = datetime.datetime.fromtimestamp(st.st_mtime)
+                    if mtime > last_backup_time:
+                        is_excluded = 0
+                        for g in f_to_exclude:
+                            if file_path.count(g) > 0:
+                                LogMessage(
+                                    file_path + " matches on excluded " + g,
+                                    "7",
+                                    "1",
+                                    "1",
+                                )
+                                is_excluded = 1
+                                break
+                        if not is_excluded:
+                            try:
+                                bkp_tar_file.add(file_path)
+                                LogMessage(
+                                    "Adding " + file_path, "7", "1", "1"
+                                )
+                            except:
+                                LogMessage(
+                                    "Could not add file to archive. Exiting.",
+                                    "2",
+                                    "1",
+                                    "1",
+                                )
+        if conf_bkp["COMPRESS_METHOD"] == "pbzip2":
+            LogMessage(
+                "Compressing tar " + file + ".tar with pbzip2", "7", "1", "1"
+            )
+            CompressFile(file + ".tar")
+        bkp_tar_file.close()
+    last_backup_fs = (
+        os.path.basename(file)
+        + ".tar"
+        + compress_ext[conf_bkp["COMPRESS_METHOD"]]
+    )
+
+
+### remote functions
+
+
+# uploads a given file to remote FTP
+def FTPUploadFile(file_path):
+    try:
+        ftp_server = ftplib.FTP()
+        LogMessage(
+            "Connecting to FTP "
+            + conf_bkp["REMOTE_SERVER"]
+            + " on port "
+            + conf_bkp["REMOTE_PORT"],
+            "5",
+            "1",
+            "1",
+        )
+        ftp_server.connect(conf_bkp["REMOTE_SERVER"], conf_bkp["REMOTE_PORT"])
+        LogMessage(
+            "Logging to FTP with username " + conf_bkp["REMOTE_USERNAME"],
+            "7",
+            "1",
+            "1",
+        )
+        ftp_server.login(
+            conf_bkp["REMOTE_USERNAME"], passwd=conf_bkp["REMOTE_PASSWORD"]
+        )
+        LogMessage(
+            "Changing folder on FTP to " + conf_bkp["REMOTE_FOLDER"],
+            "7",
+            "1",
+            "1",
+        )
+        ftp_server.cwd(conf_bkp["REMOTE_FOLDER"])
+    except ftplib.all_errors as e:
+        LogMessage(
+            "Could not connect to FTP server. Please check IP, port and connectivity ("
+            + str(e)
+            + ")",
+            "0",
+            "1",
+            "1",
+        )
+    LogMessage("Uploading file " + file_path, "7", "1", "1")
+    ftp_server.storbinary(
+        "STOR " + os.path.basename(file_path), open(file_path, "rb")
+    )
+
+
+# cleanup for local backup folder
+def LocalCleanup(path, numdays):
+    now = datetime.datetime.now()
+    older_than = now - datetime.timedelta(days=numdays)
+    how_many = 0
+    LogMessage(
+        "Cleaning up backups older than " + older_than.strftime("%Y%m%dT%H%M"),
+        "5",
+        "1",
+        "1",
+    )
+    for root, dirs, files in os.walk(path):
+        for fname in files:
+            file_path = os.path.join(root, fname)
+            st = os.stat(file_path)
+            mtime = datetime.datetime.fromtimestamp(st.st_mtime)
+            if mtime < older_than and file_path.count("_VN_"):
+                LogMessage("Removing file " + fname, "7", "1", "1")
+                os.remove(os.path.join(root, fname))
+                how_many = how_many + 1
+    LogMessage(
+        "Local cleanup complete, " + str(how_many) + " files removed",
+        "5",
+        "1",
+        "1",
+    )
+
+
+# cleanup for remote backup folder
+def RemoteCleanup(path, numdays):
+    now = datetime.datetime.now()
+    older_than = now - datetime.timedelta(days=numdays)
+    LogMessage(
+        "Cleaning up backups older than "
+        + older_than.strftime("%Y%m%dT%H%M")
+        + " on remote "
+        + conf_bkp["REMOTE_SERVER"],
+        "5",
+        "1",
+        "1",
+    )
+    if conf_bkp["REMOTE_ACCESS"] == "ftp":
+        LogMessage("FTP Access", "7", "1", "1")
+        try:
+            ftp_server = ftplib.FTP(host=conf_bkp["REMOTE_SERVER"])
+            ftp_server.login(
+                user=conf_bkp["REMOTE_USERNAME"],
+                passwd=conf_bkp["REMOTE_PASSWORD"],
+            )
+            ftp_server.cwd(conf_bkp["REMOTE_FOLDER"])
+        except socket.error as err:
+            LogMessage(
+                "Could not connect to FTP server. Please check IP, credentials, folder and connectivity",
+                "0",
+                "1",
+                "1",
+            )
+        remote_files = ftp_server.nlst()
+        for r_file in remote_files:
+            if r_file.count("_VN_") > 0:
+                l_file = os.path.join(
+                    conf_bkp["BACKUP_FOLDER"], os.path.basename(r_file)
+                )
+                LogMessage(
+                    "Checking if " + l_file + " still exists in local",
+                    "7",
+                    "1",
+                    "1",
+                )
+                if not os.path.isfile(l_file):
+                    LogMessage(
+                        "Deleting " + r_file + " on remote FTP server",
+                        "7",
+                        "1",
+                        "1",
+                    )
+                    ftp_server.delete(r_file)
+                else:
+                    LogMessage(
+                        r_file + " still exists locally, will not delete",
+                        "7",
+                        "1",
+                        "1",
+                    )
+    elif (conf_bkp["REMOTE_ACCESS"] == "scp") or (
+        conf_bkp["REMOTE_ACCESS"] == "ssh"
+    ):
+        LogMessage("SCP Access", "7", "1", "1")
+        ssh_cmd = [
+            "ssh",
+            "-o",
+            "PasswordAuthentication=no",
+            "-p",
+            conf_bkp["REMOTE_PORT"],
+            conf_bkp["REMOTE_USERNAME"] + "@" + conf_bkp["REMOTE_SERVER"],
+            "ls",
+            conf_bkp["REMOTE_FOLDER"],
+        ]
+        ssh_result = subprocess.Popen(
+            ssh_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        out, err = ssh_result.communicate()
+        if err:
+            LogMessage(
+                "Could not get list of remote files due to " + err,
+                "4",
+                "1",
+                "1",
+            )
+        else:
+            LogMessage("Searching for remote files", "4", "1", "1")
+            remote_files = out.split()
+            for r_file in remote_files:
+                if r_file.count("_VN_") > 0:
+                    l_file = os.path.join(
+                        conf_bkp["BACKUP_FOLDER"], os.path.basename(r_file)
+                    )
+                    LogMessage(
+                        "Checking if " + l_file + " still exists in local",
+                        "7",
+                        "1",
+                        "1",
+                    )
+                    if not os.path.isfile(l_file):
+                        LogMessage(
+                            "Deleting "
+                            + conf_bkp["REMOTE_FOLDER"]
+                            + "/"
+                            + r_file
+                            + " on remote SSH server",
+                            "7",
+                            "1",
+                            "1",
+                        )
+                        ssh_cmd = [
+                            "ssh",
+                            "-o",
+                            "PasswordAuthentication=no",
+                            "-p",
+                            conf_bkp["REMOTE_PORT"],
+                            conf_bkp["REMOTE_USERNAME"]
+                            + "@"
+                            + conf_bkp["REMOTE_SERVER"],
+                            "rm",
+                            "-f",
+                            conf_bkp["REMOTE_FOLDER"] + "/" + r_file,
+                        ]
+                        ssh_result = subprocess.Popen(
+                            ssh_cmd,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                        ).wait()
+                    else:
+                        LogMessage(
+                            r_file + " still exists locally, will not delete",
+                            "7",
+                            "1",
+                            "1",
+                        )
+
+
+# uploads a given file to the remote server using SCP
+def SCPUploadFile(file_path):
+    LogMessage(
+        "Attempting to copy "
+        + file_path
+        + " with SCP to "
+        + conf_bkp["REMOTE_SERVER"],
+        "7",
+        "1",
+        "1",
+    )
+    scp_command = [
+        "scp",
+        "-o",
+        "PasswordAuthentication=no",
+        "-P",
+        conf_bkp["REMOTE_PORT"],
+        file_path,
+        "{}@{}:{}".format(
+            conf_bkp["REMOTE_USERNAME"],
+            conf_bkp["REMOTE_SERVER"],
+            conf_bkp["REMOTE_FOLDER"],
+        ),
+    ]
+    scp_result = subprocess.Popen(
+        " ".join(scp_command),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        shell=True,
+    )
+    out, err = scp_result.communicate()
+    if err:
+        LogMessage(
+            "Copying "
+            + file_path
+            + " with SCP to "
+            + conf_bkp["REMOTE_USERNAME"]
+            + "@"
+            + conf_bkp["REMOTE_SERVER"]
+            + " has failed",
+            "0",
+            "1",
+            "1",
+        )
+        LogMessage("SCP message: " + err, "0", "1", "1")
+    else:
+        LogMessage(
+            "Copied "
+            + file_path
+            + " with SCP to "
+            + conf_bkp["REMOTE_USERNAME"]
+            + "@"
+            + conf_bkp["REMOTE_SERVER"]
+            + " ok",
+            "7",
+            "1",
+            "1",
+        )
+
+
+def get_aws_credentials():
+    # Try to load from .env file
+    dotenv.load_dotenv()
+
+    # Check environment variables
+    aws_access_key = os.getenv("AWS_ACCESS_KEY")
+    aws_secret_key = os.getenv("AWS_SECRET_KEY")
+
+    # Check for AWS_DEFAULT_REGION in environment variables
+    aws_default_region = os.getenv("AWS_DEFAULT_REGION")
+
+    # If not found, check /etc/voipnow/backup.conf
+    if (
+        not aws_access_key
+        or not aws_secret_key
+        or not aws_default_region
+        or "AWS_S3_BUCKET" not in conf_bkp
+    ):
+        if (
+            "AWS_ACCESS_KEY_ID" in conf_bkp
+            and "AWS_SECRET_ACCESS_KEY" in conf_bkp
+            and "AWS_DEFAULT_REGION" in conf_bkp
+        ):
+            aws_access_key = conf_bkp["AWS_ACCESS_KEY_ID"]
+            aws_secret_key = conf_bkp["AWS_SECRET_ACCESS_KEY"]
+            aws_default_region = conf_bkp["AWS_DEFAULT_REGION"]
+
+    if not aws_access_key or not aws_secret_key or not aws_default_region:
+        log_message(
+            "AWS_ACCESS_KEY_ID: {}".format(aws_access_key), "7", "1", "1"
+        )
+        log_message(
+            "AWS_DEFAULT_REGION: {}".format(aws_default_region), "7", "1", "1"
+        )
+        LogMessage(
+            "AWS credentials or region not found in .env, environment variables, or backup.conf",
+            "0",
+            "1",
+            "1",
+        )
+        return None, None, None
+
+    return aws_access_key, aws_secret_key, aws_default_region
+
+
+# uploads a given file to the remote server using S3
+def S3UploadFile(file_path):
+    LogMessage("Uploading %s to S3" % file_path, "5", "1", "1")
+
+    aws_access_key, aws_secret_key, aws_default_region = get_aws_credentials()
+    if not aws_access_key or not aws_secret_key or not aws_default_region:
+        return False
+
+    # Create an S3 client
+    s3_client = boto3.client(
+        "s3",
+        aws_access_key_id=aws_access_key,
+        aws_secret_access_key=aws_secret_key,
+        region_name=aws_default_region,
+    )
+
+    # Get the file name and current date
+    file_name = os.path.basename(file_path)
+    current_date = datetime.datetime.now()
+
+    # Construct the S3 key
+    s3_key = (
+        "backups/%(hostname)s/%(year)s/%(month)s/%(date)s-%(filename)s"
+        % {
+            "hostname": hostname,
+            "year": current_date.year,
+            "month": current_date.strftime("%m"),
+            "date": current_date.strftime("%Y%m%d"),
+            "filename": file_name,
+        }
+    )
+
+    # Check if the file already exists in S3
+    try:
+        s3_client.head_object(Bucket=conf_bkp["AWS_S3_BUCKET"], Key=s3_key)
+        LogMessage(
+            "File %s already exists in S3, skipping upload" % file_name,
+            "5",
+            "1",
+            "1",
+        )
+        return True
+    except ClientError:
+        # File doesn't exist, proceed with upload
+        try:
+            s3_client.upload_file(file_path, conf_bkp["AWS_S3_BUCKET"], s3_key)
+            LogMessage(
+                "Successfully uploaded %s to S3://%s/%s"
+                % (file_path, conf_bkp["AWS_S3_BUCKET"], s3_key),
+                "5",
+                "1",
+                "1",
+            )
+            return True
+        except ClientError as e:
+            LogMessage(
+                "Failed to upload %s to S3. Error: %s" % (file_path, str(e)),
+                "0",
+                "1",
+                "1",
+            )
+            return False
+
+
+def ManageBackupFiles():
+    staging_dir = "/var/lib/voipnow/dumps"
+    max_age = int(conf_bkp["MAX_AGE"])
+    current_time = datetime.datetime.now()
+
+    # Ensure the staging directory exists
+    if not os.path.exists(staging_dir):
+        os.makedirs(staging_dir)
+
+    # Note: This function manages two backup files generated per run:
+    # 1. {hostname}_VN_DB_{YYYYMMDDTHHMMSS}.{compression_extension} (database backup)
+    # 2. {hostname}_VN_FS_{FULL|INCR}_{YYYYMMDDTHHMMSS}.tar.{compression_extension} (filesystem backup)
+    # Files older than MAX_AGE days will be removed.
+    # The script keeps at most MAX_AGE copies of each backup type (DB and FS).
+
+    log_message(
+        "Using AWS_ACCESS_KEY_ID: {}".format(aws_access_key), "7", "1", "1"
+    )
+    log_message(
+        "Using AWS_DEFAULT_REGION: {}".format(aws_default_region),
+        "7",
+        "1",
+        "1",
+    )
+    log_message(
+        "Using AWS_S3_BUCKET: {}".format(conf_bkp["AWS_S3_BUCKET"]),
+        "7",
+        "1",
+        "1",
+    )
+
+    # Upload all files in the staging directory
+    for filename in os.listdir(staging_dir):
+        file_path = os.path.join(staging_dir, filename)
+        if os.path.isfile(file_path):
+            S3UploadFile(file_path)
+
+    # Remove files older than MAX_AGE days
+    for filename in os.listdir(staging_dir):
+        file_path = os.path.join(staging_dir, filename)
+        if os.path.isfile(file_path):
+            file_time = datetime.datetime.fromtimestamp(
+                os.path.getmtime(file_path)
+            )
+            if (current_time - file_time).days > max_age:
+                os.remove(file_path)
+                LogMessage("Removed old file: %s" % file_path, "5", "1", "1")
+
+    # Ensure no more than MAX_AGE copies of backups
+    backup_files = sorted(
+        [
+            f
+            for f in os.listdir(staging_dir)
+            if os.path.isfile(os.path.join(staging_dir, f))
+        ],
+        key=lambda x: os.path.getmtime(os.path.join(staging_dir, x)),
+        reverse=True,
+    )
+
+    while len(backup_files) > max_age:
+        file_to_remove = os.path.join(staging_dir, backup_files.pop())
+        os.remove(file_to_remove)
+        LogMessage(
+            "Removed excess backup file: %s" % file_to_remove, "5", "1", "1"
+        )
+
+
+###
+### to infinity and beyond
+###
+
+# instantiate DB
+global data, console_tty
+data = MySQLCredentials()
+VN = VoipNowDB()
+
+last_backup_time = VN.last_ran()
+
+if os.isatty(sys.stdin.fileno()):
+    console_tty = 1
+    pass
+else:
+    console_tty = 0
+    sys.stderr = open("/tmp/vnbackup.err", "a")
+    pass
+
+if os.path.isfile(conf_file_oldtech):
+    print("Old backup configuration found, converting to new format.")
+    # get backup config settings into conf_bkp
+    conf_old = ReadConfigFile(conf_file_oldtech)
+    conf_bkp = {}
+    conf_bkp["BACKUP_ENABLED"] = "no"
+    conf_bkp["BACKUP_FOLDER"] = conf_old["BACKUPHOME"]
+    conf_bkp["BACKUP_HISTORY"] = conf_old["KEEPLOCAL"]
+    if conf_old["COMPRESSBACKUP"] == "gzip":
+        conf_bkp["COMPRESS_METHOD"] = "gzip"
+    elif conf_old["COMPRESSBACKUP"] == "bzip":
+        conf_bkp["COMPRESS_METHOD"] = "bzip2"
+    else:
+        conf_bkp["COMPRESS_METHOD"] = "gzip"
+    conf_bkp["DEBUG"] = "yes" if args.debug else "no"
+    conf_bkp["LOG_FILE"] = "/var/log/voipnow/backup.log"
+    conf_bkp["MAX_AGE"] = "1"
+    conf_bkp["MIN_FREE"] = conf_old["MINSPACE"]
+    conf_bkp["NOTIFY_EMAIL"] = conf_old["BACKUPADMINEMAIL"]
+    conf_bkp["REMOTE_ACCESS"] = conf_old["REMOTESTORAGETYPE"]
+    conf_bkp["REMOTE_BACKUP"] = conf_old["REMOTESTORAGE"]
+    conf_bkp["REMOTE_CHECK"] = "yes"
+    conf_bkp["REMOTE_FOLDER"] = conf_old["REMOTEHOME"]
+    conf_bkp["REMOTE_PASSWORD"] = conf_old["FTPPASS"]
+    conf_bkp["REMOTE_PORT"] = "21"
+    conf_bkp["REMOTE_SERVER"] = conf_old["REMOTEIP"]
+    conf_bkp["REMOTE_USERNAME"] = conf_old["FTPUSER"]
+    conf_bkp["SMTP_AUTHENTICATE"] = "no"
+    conf_bkp["SMTP_FROM"] = "vn3backup@" + socket.gethostname()
+    conf_bkp["SMTP_PASSWORD"] = "CHANGEME"
+    conf_bkp["SMTP_PORT"] = "25"
+    conf_bkp["SMTP_SERVER"] = "localhost"
+    conf_bkp["SMTP_SSL"] = "no"
+    conf_bkp["SMTP_USERNAME"] = "CHANGEME"
+    if "MYSQL_DUMP" in conf_old:
+        conf_bkp["MYSQL_DUMP"] = conf_old["MYSQL_DUMP"]
+    else:
+        conf_bkp["MYSQL_DUMP"] = "xtrabackup"
+    sorted_items = sorted(conf_bkp.iteritems())
+    conf_file_tmp = (
+        conf_file_bkp
+        + "."
+        + "".join(
+            random.choice(string.ascii_uppercase + string.digits)
+            for _ in range(7)
+        )
+    )
+    LogMessage(
+        "Saving migrated configuration to " + conf_file_tmp, "4", "1", "1"
+    )
+    with open(conf_file_tmp, "wb") as new_config:
+        config_writer = csv.writer(
+            new_config, delimiter=" ", quotechar="|", quoting=csv.QUOTE_MINIMAL
+        )
+        for k, v in sorted_items:
+            config_writer.writerow([k, v])
+    new_config.close()
+    LogMessage(
+        "Renaming " + conf_file_oldtech + " to " + conf_file_old, "7", "1", "1"
+    )
+    os.rename(conf_file_oldtech, conf_file_old)
+    LogMessage(
+        "Renaming " + conf_file_tmp + " to " + conf_file_bkp, "7", "1", "1"
+    )
+    os.rename(conf_file_tmp, conf_file_bkp)
+else:
+    conf_bkp = ReadConfigFile(conf_file_bkp)
+
+conf_paths = ReadConfigFile(conf_file_paths)
+
+try:
+    if conf_bkp["BACKUP_ENABLED"] == "no":
+        LogMessage(
+            "Backup is not enabled according to your configuration file. Stopping.",
+            "0",
+            "1",
+            "1",
+        )
+except KeyError:
+    LogMessage(
+        "BACKUP_ENABLED key is not defined, unknown machine state. Stopping.",
+        "0",
+        "1",
+        "1",
+    )
+
+
+conf_s3 = ReadConfigFile(conf_file_storage)
+
+
+def S3Checks():
+    """
+    Check S3 configuration and ensure necessary credentials and settings are in place.
+    """
+    aws_access_key, aws_secret_key, aws_default_region = get_aws_credentials()
+    if not aws_access_key or not aws_secret_key or not aws_default_region:
+        log_message("AWS credentials not found or invalid", "0", "1", "1")
+        sys.exit(1)
+
+    # Check if the bucket exists
+    s3_client = boto3.client(
+        "s3",
+        aws_access_key_id=aws_access_key,
+        aws_secret_access_key=aws_secret_key,
+        region_name=aws_default_region,
+    )
+    try:
+        s3_client.head_bucket(Bucket=conf_bkp["AWS_S3_BUCKET"])
+        log_message(
+            "S3 bucket %s exists and is accessible"
+            % conf_bkp["AWS_S3_BUCKET"],
+            "5",
+            "1",
+            "1",
+        )
+    except ClientError as e:
+        log_message(
+            "S3 bucket %s does not exist or is not accessible: %s"
+            % (conf_bkp["AWS_S3_BUCKET"], str(e)),
+            "0",
+            "1",
+            "1",
+        )
+        sys.exit(1)
+
+
+if conf_bkp["REMOTE_ACCESS"] == "s3":
+    conf_pbx = ReadConfigFile(conf_file_pbx)
+    S3Checks()
+
+
+# folders to backup
+f_to_backup = (
+    conf_paths["VOIPNOW_ROOT_D"],
+    conf_paths["ASTERISK_LIB_D"],
+    conf_paths["ASTERISK_SPOOL_D"],
+    conf_paths["FAX_SPOOL_DIR"],
+    conf_paths["FAX_MSG_DIR"],
+    conf_paths["FILESHARE_ROOT_D"],
+    conf_paths["VOIPNOW_QUOTA_D"],
+    conf_paths["ES_VAR_D"],
+    conf_s3["STORAGE_TRANSFEROUT_D"],
+    conf_s3["STORAGE_CACHE_D"],
+    "/var/lib/voipnow",
+    "/var/lib/rabbitmq",
+    "/etc",
+)
+
+# Change backup destination to /var/backups/
+conf_bkp["BACKUP_FOLDER"] = "/var/backups/"
+
+# exclusion list
+f_to_exclude = ("/etc/mtab", "/etc/udev", "/var/backups")
+
+# compressed file extension mapping
+compress_ext = {"gzip": ".gz", "bzip2": ".bz2", "pbzip2": ".pbz2"}
+
+# MySQL dump options
+mysql_dump_options = [
+    "--single-transaction",
+    "--quick",
+    "--no-autocommit",
+    "--quote-names",
+    "--extended-insert",
+    "--routines",
+    "--triggers",
+    "--add-drop-database",
+]
+
+EnvironmentChecks()
+
+# last backups generated
+last_backup_db = ""
+last_backup_fs = ""
+
+# get the host name of this machine
+hostname = socket.gethostname().split(".")[0]
+
+# if the SQL node is not localhost, the backup method has to be mysqldump (xtrabackup is not supported for remote hosts' backup)
+if (conf_bkp["MYSQL_DUMP"] != "mysqldump") and (
+    data["hostname"] != "localhost"
+):
+    LogMessage(
+        "Remote SQL nodes can only be backed up using mysqldump, xtrabackup is not supported.",
+        "3",
+        "1",
+        "1",
+    )
+    LogMessage(
+        "Switching to MySQL-based dump for backup of remote node",
+        "3",
+        "1",
+        "1",
+    )
+    conf_bkp["MYSQL_DUMP"] = "mysqldump"
+
+LogMessage("VoipNow backup starting", "7", "1", "1")
+FreeSpaceCheck(conf_bkp["BACKUP_FOLDER"])
+
+# start MySQL dump
+MySQLDumper(conf_bkp["BACKUP_FOLDER"], mysql_dump_options)
+
+## decide if we go incremental or full
+last_full_backup = {}
+last_full_backup["filename"] = ""
+last_full_backup["mtime"] = 0
+
+# find out the latest backups
+for bkp_file in os.listdir(conf_bkp["BACKUP_FOLDER"]):
+    if fnmatch.fnmatch(bkp_file, "*VN_FS_FULL*"):
+        mtime = os.stat(
+            os.path.join(conf_bkp["BACKUP_FOLDER"], bkp_file)
+        ).st_mtime
+        if mtime > last_full_backup["mtime"]:
+            last_full_backup["filename"] = bkp_file
+            last_full_backup["mtime"] = mtime
+
+# action according to latest backups' status
+if not last_full_backup["filename"] == "":
+    last_full_backup["hours_ago"] = (
+        int(time.time() - last_full_backup["mtime"]) / 3600
+    )
+    LogMessage(
+        "Last full backup was made "
+        + str(last_full_backup["hours_ago"])
+        + " hours ago in "
+        + last_full_backup["filename"],
+        "5",
+        "1",
+        "1",
+    )
+    if last_full_backup["hours_ago"] < int(conf_bkp["MAX_AGE"]) * 24:
+        # we go (incre)mental
+        LogMessage("Starting incremental backup", "5", "1", "1")
+        CompressFullDirs(
+            os.path.join(
+                conf_bkp["BACKUP_FOLDER"],
+                hostname
+                + "_VN_FS_INCR_"
+                + datetime.datetime.now().strftime("%Y%m%dT%H%M"),
+            ),
+            f_to_backup,
+            1,
+        )
+    else:
+        # full backup it iz
+        LogMessage("Starting full backup.", "5", "1", "1")
+        CompressFullDirs(
+            os.path.join(
+                conf_bkp["BACKUP_FOLDER"],
+                hostname
+                + "_VN_FS_FULL_"
+                + datetime.datetime.now().strftime("%Y%m%dT%H%M"),
+            ),
+            f_to_backup,
+            0,
+        )
+else:
+    LogMessage(
+        "No full backup found, starting a full backup right now", "4", "1", "1"
+    )
+    CompressFullDirs(
+        os.path.join(
+            conf_bkp["BACKUP_FOLDER"],
+            hostname
+            + "_VN_FS_FULL_"
+            + datetime.datetime.now().strftime("%Y%m%dT%H%M"),
+        ),
+        f_to_backup,
+        0,
+    )
+
+# save the MD5
+md5_db = MD5File(os.path.join(conf_bkp["BACKUP_FOLDER"], last_backup_db))
+md5_fs = MD5File(os.path.join(conf_bkp["BACKUP_FOLDER"], last_backup_fs))
+
+LogMessage(
+    "MD5 sum of DB backup "
+    + os.path.join(conf_bkp["BACKUP_FOLDER"], last_backup_db)
+    + " is "
+    + str(md5_db),
+    "7",
+    "1",
+    "1",
+)
+LogMessage(
+    "MD5 sum of FS backup "
+    + os.path.join(conf_bkp["BACKUP_FOLDER"], last_backup_fs)
+    + " is "
+    + str(md5_fs),
+    "7",
+    "1",
+    "1",
+)
+
+# Manage backup files and upload to S3
+ManageBackupFiles()
+
+# Main execution
+if __name__ == "__main__":
+    try:
+        EnvironmentChecks()
+        FreeSpaceCheck("/var/lib/voipnow/dumps")
+        MySQLDumper("/var/lib/voipnow/dumps", mysql_dump_options)
+
+        backup_time = datetime.datetime.now().strftime("%Y%m%dT%H%M")
+        backup_path = os.path.join(
+            "/var/lib/voipnow/dumps", "%s_VN_FS_" % hostname
+        )
+
+        if (
+            not last_full_backup["filename"]
+            or last_full_backup["hours_ago"] >= int(conf_bkp["MAX_AGE"]) * 24
+        ):
+            LogMessage(
+                "Starting full backup",
+                "4" if not last_full_backup["filename"] else "5",
+                "1",
+                "1",
+            )
+            CompressFullDirs(
+                "%sFULL_%s" % (backup_path, backup_time), f_to_backup, 0
+            )
+        else:
+            LogMessage("Starting incremental backup", "5", "1", "1")
+            CompressFullDirs(
+                "%sINCR_%s" % (backup_path, backup_time), f_to_backup, 1
+            )
+
+        for backup_type in ["db", "fs"]:
+            backup_file = locals()["last_backup_" + backup_type]
+            md5_sum = MD5File(
+                os.path.join("/var/lib/voipnow/dumps", backup_file)
+            )
+            LogMessage(
+                "MD5 sum of %s backup %s is %s"
+                % (backup_type.upper(), backup_file, md5_sum),
+                "7",
+                "1",
+                "1",
+            )
+
+        ManageBackupFiles()
+        EnvironmentCleanup()
+        LogMessage("VoipNow backup completed.", "1", "1", "1")
+    except Exception as e:
+        logging.exception("An unexpected error occurred during backup")
+        LogMessage(
+            "Backup failed due to unexpected error: %s" % str(e), "0", "1", "1"
+        )
+    finally:
+        if "VN" in globals():
+            del VN
