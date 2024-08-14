@@ -298,11 +298,6 @@ for reseller_name, calls in resellers_data.items():
             client_total_reseller_cost = sum(call["reseller_cost"] for call in client_calls)
             client_total_client_cost = sum(call["client_cost"] for call in client_calls)
             print(f"Debug: Client: {client_name}, Total Reseller Cost: {client_total_reseller_cost}, Total Client Cost: {client_total_client_cost}")
-                call["reseller_cost"] for call in client_calls
-            )
-            client_total_client_cost = sum(
-                call["client_cost"] for call in client_calls
-            )
             client_hours = client_total_duration // 3600
             client_minutes = (client_total_duration % 3600) // 60
             client_seconds = client_total_duration % 60
