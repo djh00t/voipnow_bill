@@ -192,8 +192,8 @@ WHERE
         (call_history.disposion = 'ANSWERED' AND call_history.flow = 'out' AND call_history.costadmin > 0 AND call_history.costres > 0)
 	)
     AND call_history.calltype != 'local'
-    AND call_history.start BETWEEN DATE_SUB(LAST_DAY(NOW() - INTERVAL 1 MONTH), INTERVAL DAY(LAST_DAY(NOW() - INTERVAL 1 MONTH)) - 1 DAY)
-                   AND LAST_DAY(NOW() - INTERVAL 1 MONTH)
+    AND call_history.start BETWEEN DATE_FORMAT(NOW() - INTERVAL 1 MONTH, '%Y-%m-01 00:00:00')
+                   AND LAST_DAY(NOW() - INTERVAL 1 MONTH) + INTERVAL 1 DAY - INTERVAL 1 SECOND
 ORDER BY
     reseller_name,
     client_name,
