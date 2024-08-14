@@ -418,6 +418,37 @@ for reseller_name, calls in resellers_data.items():
                     ]
                 )
 
-# Close the cursor and connection
+# Fetch all DIDs for resellers and clients
+cursor_main.execute(
+    """
+    SELECT
+        did.did,
+        did.reseller_id,
+        did.client_id,
+        COALESCE(client.company, reseller.company) AS client_name,
+        did.cr_date AS created_date
+    FROM
+        voipnow.channel_did AS did
+    LEFT JOIN
+        voipnow.client AS client ON did.client_id = client.id
+    LEFT JOIN
+        voipnow.client AS reseller ON did.reseller_id = reseller.id
+"""
+)
+dids = cursor_main.fetchall()
+
+# Append DID section to each CSV file
+for reseller_name, calls in resellers_data.items():
+    filename = f"{year_month_str}_{reseller_name.replace(' ', '_')}_OUTBOUND_CALLS.csv"
+    with open(filename, "a", newline="") as csvfile:
+        csvwriter = csv.writer(csvfile)
+        csvwriter.writerow([])  # Blank line before DID section
+        csvwriter.writerow(["Reseller DIDs"])
+        csvwriter.writerow(["Total DIDs:", f"{calls[0]['reseller_did_count']}"])
+        csvwriter.writerow(["did", "reseller_id", "client_id", "client_name", "created_date"])
+
+        for did in dids:
+            if did["reseller_id"] == calls[0]["reseller_id"]:
+                csvwriter.writerow([did["did"], did["reseller_id"], did["client_id"], did["client_name"], did["created_date"]])
 cursor_main.close()
 db_connection.close()
