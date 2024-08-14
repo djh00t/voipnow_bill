@@ -208,7 +208,6 @@ cursor_main.execute(query)
 rows = cursor_main.fetchall()
 
 # Process data per reseller and client
-print("Debug: Starting to process data per reseller and client")
 resellers_data = {}
 for row in rows:
     reseller_name = row["reseller_name"]
@@ -242,7 +241,6 @@ for reseller_name, calls in resellers_data.items():
         # Write reseller summary
         total_reseller_cost = sum(call["reseller_cost"] for call in calls)
         total_client_cost = sum(call["client_cost"] for call in calls)
-        print(f"Debug: Reseller: {reseller_name}, Total Reseller Cost: {total_reseller_cost}, Total Client Cost: {total_client_cost}")
         total_client_cost = sum(call["client_cost"] for call in calls)
         total_duration = sum(call["duration"] for call in calls)
         total_hours = total_duration // 3600
@@ -291,13 +289,11 @@ for reseller_name, calls in resellers_data.items():
             clients_grouped[client_name].append(call)
 
         for client_name, client_calls in clients_grouped.items():
-            print(f"Debug: Client: {client_name}")
             client_total_duration = sum(
                 call["duration"] for call in client_calls
             )
             client_total_reseller_cost = sum(call["reseller_cost"] for call in client_calls)
             client_total_client_cost = sum(call["client_cost"] for call in client_calls)
-            print(f"Debug: Client: {client_name}, Total Reseller Cost: {client_total_reseller_cost}, Total Client Cost: {client_total_client_cost}")
             client_hours = client_total_duration // 3600
             client_minutes = (client_total_duration % 3600) // 60
             client_seconds = client_total_duration % 60
