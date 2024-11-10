@@ -2,6 +2,7 @@
 
 import mysql.connector
 import csv
+import argparse
 from datetime import datetime, timedelta
 
 
@@ -21,7 +22,20 @@ def get_last_month():
     return last_month.year, last_month.month
 
 
-# Establish MySQL connection
+# Parse command-line arguments
+parser = argparse.ArgumentParser(description="Generate E164 billing CSV reports.")
+parser.add_argument("-y", "--year", type=int, help="Year for the report")
+parser.add_argument("-m", "--month", type=int, help="Month for the report")
+args = parser.parse_args()
+
+# Function to get the last month and year
+def get_last_month():
+    if args.year and args.month:
+        return args.year, args.month
+    today = datetime.today()
+    first = today.replace(day=1)
+    last_month = first - timedelta(days=1)
+    return last_month.year, last_month.month
 username, password = get_mysql_credentials()
 db_connection = mysql.connector.connect(
     host="localhost", user=username, password=password, database="voipnow"
