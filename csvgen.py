@@ -206,8 +206,8 @@ WHERE
         (call_history.disposion = 'ANSWERED' AND call_history.flow = 'out' AND call_history.costadmin > 0 AND call_history.costres > 0)
 	)
     AND call_history.calltype != 'local'
-    AND call_history.start BETWEEN DATE_FORMAT(NOW() - INTERVAL 1 MONTH, '%Y-%m-01 00:00:00')
-                   AND LAST_DAY(NOW() - INTERVAL 1 MONTH) + INTERVAL 1 DAY - INTERVAL 1 SECOND
+    AND call_history.start BETWEEN DATE_FORMAT(STR_TO_DATE(CONCAT(%s, '-', %s, '-01'), '%Y-%m-%d'), '%Y-%m-01 00:00:00')
+                   AND LAST_DAY(STR_TO_DATE(CONCAT(%s, '-', %s, '-01'), '%Y-%m-%d')) + INTERVAL 1 DAY - INTERVAL 1 SECOND
 ORDER BY
     reseller_name,
     client_name,
@@ -216,7 +216,7 @@ ORDER BY
 """
 
 # Execute the main query
-cursor_main.execute(query)
+cursor_main.execute(query, (args.year, args.month, args.year, args.month))
 
 # Fetch all rows at once
 rows = cursor_main.fetchall()
