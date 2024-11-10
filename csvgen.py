@@ -234,7 +234,7 @@ year, month = get_last_month()
 year_month_str = f"{year}{month:02d}"
 
 for reseller_name, calls in resellers_data.items():
-    filename = f"{year_month_str}_{reseller_name.replace(' ', '_')}_OUTBOUND_CALLS.csv"
+    filename = f"{year_month_str}_{reseller_name.replace(' ', '_')}_E164_BILL.csv"
     with open(filename, "w", newline="") as csvfile:
         csvwriter = csv.writer(csvfile)
 
@@ -435,7 +435,7 @@ dids = cursor_main.fetchall()
 
 # Append DID section to each CSV file
 for reseller_name, calls in resellers_data.items():
-    filename = f"{year_month_str}_{reseller_name.replace(' ', '_')}_OUTBOUND_CALLS.csv"
+    filename = f"{year_month_str}_{reseller_name.replace(' ', '_')}_E164_BILL.csv"
     with open(filename, "a", newline="") as csvfile:
         csvwriter = csv.writer(csvfile)
         csvwriter.writerow([])  # Blank line before DID section
