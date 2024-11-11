@@ -128,13 +128,8 @@ class DIDHandler:
             str: Product code or None if no match found
         """
         for product_code, mapping in self.product_mappings.items():
-            query = f"""
-                SELECT 1 
-                FROM (SELECT %s as did) AS temp 
-                WHERE {mapping['did_map']} = %s
-            """
-            self.cursor.execute(query, (did_str, did_str))
-            if self.cursor.fetchone():
+            # Example for prefix matching
+            if did_str.startswith(mapping['did_map']):
                 return product_code
         return None
 
