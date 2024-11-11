@@ -340,7 +340,7 @@ class DIDHandler:
                 'range_end': range_entries[-1]['did'],
                 'did_product': product_code,
                 'owner_id': range_entries[0]['owner_id'],
-                'product_name': self.product_mappings[product_code]['name'],
+                'product_name': self.product_mappings[product_code]['product_name'],
                 'setup': actual_setup,
                 'mrc': mrc_cost
             })
@@ -359,7 +359,7 @@ class DIDHandler:
                         'range_end': None,
                         'did_product': product_code,
                         'owner_id': entry['owner_id'],
-                        'product_name': self.product_mappings[product_code]['name'],
+                        'product_name': self.product_mappings[product_code]['product_name'],
                         'setup': actual_setup,
                         'mrc': mrc_cost
                     })
@@ -445,25 +445,28 @@ class DIDHandler:
                     'name': self.get_customer_name(owner_id),
                     'total_dids': 0,
                     'total_setup': 0.0,
-                    'total_mrc': 0.0
+                    'total_mrc': 0.0,
+                    'EXCEPTIONS': 0  # Initialize EXCEPTIONS count
                 }
                 for code in product_codes:
                     summary['customers'][owner_id][code] = 0
-            
+
             num_dids = 1
             if result['range_end']:
                 start_num = int(result['range_start'])
                 end_num = int(result['range_end'])
                 num_dids = end_num - start_num + 1
-            
+
             customer = summary['customers'][owner_id]
             customer['total_dids'] += num_dids
             customer['total_setup'] += result['setup']
             customer['total_mrc'] += result['mrc']
-            
+
             if result['did_product'] in product_codes:
                 customer[result['did_product']] += num_dids
-            
+            elif result['did_product'] == 'EXCEPTION':
+                customer['EXCEPTIONS'] += 1
+
             summary['total_dids'] += num_dids
             summary['total_setup'] += result['setup']
             summary['total_mrc'] += result['mrc']
@@ -550,7 +553,7 @@ class DIDHandler:
             f"{summary['total_dids']:>8} "
         )
         for code in product_columns:
-            total = sum(cust[code] for cust in summary['customers'].values())
+            total = sum(cust.get(code, 0) for cust in summary['customers'].values())
             total_line += f"{total:>12} "
         print(total_line)
 
