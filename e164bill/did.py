@@ -312,19 +312,20 @@ class DIDHandler:
         first_did = range_entries[0]['did']
         product_code = self.determine_did_product(first_did)
         
-        if not product_code:
-            # Mark as exception
-            results.append({
-                'did': did_entry['did'],
-                'range_start': None,
-                'range_end': None,
-                'did_product': 'EXCEPTION',
-                'owner_id': did_entry['owner_id'],
-                'product_name': 'EXCEPTION',
-                'setup': 0.0,
-                'mrc': 0.0
-            })
-            continue
+        for did_entry in range_entries:
+            if not product_code:
+                # Mark as exception
+                results.append({
+                    'did': did_entry['did'],
+                    'range_start': None,
+                    'range_end': None,
+                    'did_product': 'EXCEPTION',
+                    'owner_id': did_entry['owner_id'],
+                    'product_name': 'EXCEPTION',
+                    'setup': 0.0,
+                    'mrc': 0.0
+                })
+                continue
             
         if (product_code == 'AU-DID-100' and len(range_entries) >= 100) or \
            (product_code == 'AU-DID-10' and len(range_entries) >= 10):
