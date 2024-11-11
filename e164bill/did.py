@@ -133,7 +133,7 @@ class DIDHandler:
                 FROM (SELECT %s as did) AS temp 
                 WHERE {mapping['did_map']} = %s
             """
-            self.cursor.execute(query, (did_str,))
+            self.cursor.execute(query, (did_str, did_str))
             if self.cursor.fetchone():
                 return product_code
         return None
