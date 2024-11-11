@@ -131,7 +131,7 @@ class DIDHandler:
             query = f"""
                 SELECT 1 
                 FROM (SELECT %s as did) AS temp 
-                WHERE {mapping['did_map']}
+                WHERE {mapping['did_map']} = %s
             """
             self.cursor.execute(query, (did_str,))
             if self.cursor.fetchone():
