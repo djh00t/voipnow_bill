@@ -111,7 +111,7 @@ class DIDHandler:
             mappings[row['E164_product_code']] = {
                 'id': row['E164_product_id'],
                 'did_map': row['did_map'],
-                'name': row['product_name'],
+                'product_name': row['product_name'],
                 'default_setup': float(row['billing_cost_setup']),
                 'default_mrc': float(row['billing_cost_mrc'])
             }
@@ -173,25 +173,28 @@ class DIDHandler:
         mapping = self.product_mappings[product_code]
         return mapping['default_setup'], mapping['default_mrc']
 
-    def should_charge_setup(self, mod_date: datetime, report_month: date) -> bool:
+    def should_charge_setup(self, mod_date: datetime, report_date: date) -> bool:
         """
         Determine if setup fee should be charged based on modification date.
-        
+
         Args:
             mod_date (datetime): DID modification date
-            report_month (date): Report month
-            
+            report_date (date): Date of the report
+
         Returns:
             bool: True if setup fee should be charged
         """
         if not mod_date:
             return False
-            
-        # Check if DID was modified in month prior to report
-        prior_month = report_month.replace(day=1) - timedelta(days=1)
-        mod_month = mod_date.date().replace(day=1)
-        
-        return mod_month == prior_month
+
+        # Get the first day of the report month
+        report_month_start = report_date.replace(day=1)
+        # Get the first day of the month prior to the report date
+        prior_month_end = report_month_start - timedelta(days=1)
+        prior_month_start = prior_month_end.replace(day=1)
+
+        # Check if mod_date is within prior month
+        return prior_month_start <= mod_date.date() <= prior_month_end
 
     def get_base_query(self) -> str:
         """
@@ -310,7 +313,18 @@ class DIDHandler:
         product_code = self.determine_did_product(first_did)
         
         if not product_code:
-            return results
+            # Mark as exception
+            results.append({
+                'did': did_entry['did'],
+                'range_start': None,
+                'range_end': None,
+                'did_product': 'EXCEPTION',
+                'owner_id': did_entry['owner_id'],
+                'product_name': 'EXCEPTION',
+                'setup': 0.0,
+                'mrc': 0.0
+            })
+            continue
             
         if (product_code == 'AU-DID-100' and len(range_entries) >= 100) or \
            (product_code == 'AU-DID-10' and len(range_entries) >= 10):
@@ -476,48 +490,67 @@ class DIDHandler:
                   f"${result['setup']:<9.2f} "
                   f"${result['mrc']:<9.2f}")
 
-        # Generate and print detailed summary
+        # Collect exceptions
+        exceptions = [res for res in results if res['did_product'] == 'EXCEPTION']
+
+        # Print the exceptions list/table
+        if exceptions:
+            print("\nEXCEPTIONS")
+            print("-" * 80)
+            print(f"{'DID':<15} {'Owner ID':<10} {'Customer Name':<30}")
+            print("-" * 80)
+            for ex in exceptions:
+                owner_name = self.get_customer_name(ex['owner_id'])
+                print(f"{ex['did']:<15} {ex['owner_id']:<10} {owner_name:<30}")
+            print("-" * 80)
+            print(f"Total Exceptions: {len(exceptions)}\n")
+
+        # Generate and print the customer summary
         summary, product_codes = self.generate_summary(results)
-        
+
         print("\nCUSTOMER SUMMARY")
         print("-" * 150)
-        
+
+        # Prepare the header
+        base_columns = ['Customer Name', 'ID', 'Setup', 'MRC', 'Total']
+        product_columns = [code for code in product_codes if code != 'EXCEPTION']
+        product_columns.append('EXCEPTIONS')
+
         # Print header
         header = (
-            f"{'Customer Name':<30} {'ID':<6} {'Setup':>10} {'MRC':>10} {'Total':>8} "
+            f"{base_columns[0]:<25} {base_columns[1]:<6} {base_columns[2]:>10} "
+            f"{base_columns[3]:>10} {base_columns[4]:>8} "
         )
-        for code in product_codes:
-            product_name = self.product_mappings[code]['name']
-            header += f"{product_name[:10]:>10} "
+        for code in product_columns:
+            header += f"{code:>12} "
         print(header)
         print("-" * 150)
-        
+
         # Print each customer's details
-        for owner_id, customer in sorted(summary['customers'].items(), 
-                                       key=lambda x: x[1]['name'].lower()):
+        for owner_id, customer in sorted(summary['customers'].items(), key=lambda x: x[1]['name'].lower()):
             line = (
-                f"{customer['name'][:29]:<30} "
+                f"{customer['name'][:25]:<25} "
                 f"{owner_id:<6} "
                 f"${customer['total_setup']:>9.2f} "
                 f"${customer['total_mrc']:>9.2f} "
                 f"{customer['total_dids']:>8} "
             )
-            for code in product_codes:
-                line += f"{customer[code]:>10} "
+            for code in product_columns:
+                count = customer.get(code, 0)
+                line += f"{count:>12} "
             print(line)
-        
+
         # Print overall totals
         print("-" * 150)
         total_line = (
-            f"{'TOTAL':<30} {'':>6} "
+            f"{'TOTAL':<25} {'':<6} "
             f"${summary['total_setup']:>9.2f} "
             f"${summary['total_mrc']:>9.2f} "
             f"{summary['total_dids']:>8} "
         )
-        product_totals = {code: sum(c[code] for c in summary['customers'].values())
-                         for code in product_codes}
-        for code in product_codes:
-            total_line += f"{product_totals[code]:>10} "
+        for code in product_columns:
+            total = sum(cust[code] for cust in summary['customers'].values())
+            total_line += f"{total:>12} "
         print(total_line)
 
     def cleanup(self):
