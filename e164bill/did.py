@@ -556,6 +556,7 @@ def main():
     parser.add_argument("--json", help="Export to JSON file (provide filename)")
     
     args = parser.parse_args()
+    args.customer_type = args.customer_type.upper()
     
     # Set cutoff date
     if args.year and args.month:
