@@ -548,7 +548,7 @@ def main():
     """Main execution function."""
     parser = argparse.ArgumentParser(description="Process DIDs and identify ranges")
     parser.add_argument("--customer-type", choices=['CLIENT', 'RESELLER', 'CARRIER'], 
-                      default='RESELLER', help="Type of customer to process")
+                      default='RESELLER', type=str.upper, help="Type of customer to process")
     parser.add_argument("-y", "--year", type=int, help="Year for cutoff date")
     parser.add_argument("-m", "--month", type=int, help="Month for cutoff date")
     parser.add_argument("-d", "--day", type=int, default=1, help="Day for cutoff date")
