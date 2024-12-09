@@ -72,10 +72,12 @@ args = parser.parse_args()
 
 # Initialize database connection
 username, password = get_mysql_credentials()
+print("Connecting to the database...")
 db_connection = mysql.connector.connect(
     host="localhost", user=username, password=password, database="voipnow"
 )
 
+print("Database connection successful.")
 cursor_main = db_connection.cursor(dictionary=True)
 
 # Fetch DID counts for resellers
@@ -259,6 +261,7 @@ cursor_main.execute(query, (args.year, args.month, args.year, args.month))
 
 # Fetch all call records
 rows = cursor_main.fetchall()
+print(f"Fetched {len(rows)} call records from the database.")
 
 # Process data by reseller
 resellers_data = {}
@@ -286,6 +289,7 @@ year_month_str = f"{year}{month:02d}"
 # Process each reseller's data and generate a report
 for reseller_name, calls in resellers_data.items():
     filename = f"{year_month_str}_{reseller_name.replace(' ', '_')}_E164_BILL.csv"
+    print(f"Writing CSV file: {filename}")
     with open(filename, "w", newline="") as csvfile:
         csvwriter = csv.writer(csvfile)
 
@@ -459,6 +463,7 @@ dids = cursor_main.fetchall()
 # Append DID section to each reseller's report
 for reseller_name, calls in resellers_data.items():
     filename = f"{year_month_str}_{reseller_name.replace(' ', '_')}_E164_BILL.csv"
+    print(f"Appending DID section to CSV file: {filename}")
     with open(filename, "a", newline="") as csvfile:
         csvwriter = csv.writer(csvfile)
         
