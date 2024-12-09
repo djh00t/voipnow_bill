@@ -64,11 +64,32 @@ def get_last_month():
     last_month = first - timedelta(days=1)
     return last_month.year, last_month.month
 
+def get_last_month():
+    """
+    Determine the year and month for report generation.
+    
+    Returns:
+        tuple[int, int]: Year and month for report
+        
+    Note:
+        Uses command line arguments if provided, otherwise defaults to previous month
+    """
+    if args.year and args.month:
+        return args.year, args.month
+    today = datetime.today()
+    first = today.replace(day=1)
+    last_month = first - timedelta(days=1)
+    return last_month.year, last_month.month
+
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description="Generate E164 billing CSV reports.")
 parser.add_argument("-y", "--year", type=int, help="Year for the report")
 parser.add_argument("-m", "--month", type=int, help="Month for the report")
 args = parser.parse_args()
+
+# Set default year and month if not provided
+if not args.year or not args.month:
+    args.year, args.month = get_last_month()
 
 # Initialize database connection
 username, password = get_mysql_credentials()
