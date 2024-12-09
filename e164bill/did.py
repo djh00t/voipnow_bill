@@ -1,69 +1,20 @@
 #!/usr/bin/env python3
-"""
-This module provides functionality for managing and processing DIDs (Direct Inward Dialing numbers)
-in a VoIP system. It handles DID range identification, product classification, database updates,
-and report generation for carriers, resellers, and clients.
-
-The module connects to a MySQL database to process and update DID information, identifies DID
-ranges and their associated products, and can generate reports in both CSV and JSON formats.
-
-Dependencies:
-    - mysql.connector
-    - argparse
-    - datetime
-    - csv
-    - json
-    - os
-    - typing
-
-Database Requirements:
-    - MySQL/MariaDB with the following tables:
-        - channel_did
-        - client
-"""
 
 import mysql.connector
 import argparse
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 import csv
 import json
 import os
 from typing import Literal
 
-# Define custom type for customer classification
 CustomerType = Literal['CLIENT', 'RESELLER', 'CARRIER']
 
 class DIDHandler:
-    """
-    Handles DID processing, management, and reporting operations.
-    
-    This class provides methods for processing DIDs, identifying ranges, updating database
-    records, and generating reports. It supports different customer types (CLIENT, RESELLER,
-    CARRIER) and can handle various DID products and range sizes.
-    
-    Attributes:
-        customer_type (CustomerType): Type of customer (CLIENT, RESELLER, CARRIER)
-        cutoff_date (date): Date limit for processing DIDs
-        username (str): Database username
-        password (str): Database password
-        db (mysql.connector.connection): Database connection
-        cursor (mysql.connector.cursor): Database cursor
-        product_mappings (dict): Cached product mappings from database
-    """
-
     def __init__(self, customer_type: CustomerType, cutoff_date: date):
-        """
-        Initialize DIDHandler with customer type and cutoff date.
-        
-        Args:
-            customer_type (CustomerType): Type of customer to process
-            cutoff_date (date): Date limit for processing DIDs
-        """
         self.customer_type = customer_type
         self.cutoff_date = cutoff_date
         self.username, self.password = self.get_mysql_credentials()
-        
-        # Establish database connection
         self.db = mysql.connector.connect(
             host="localhost",
             user=self.username,
@@ -71,209 +22,85 @@ class DIDHandler:
             database="voipnow"
         )
         self.cursor = self.db.cursor(dictionary=True)
-        
-        # Initialize product mappings
-        self.product_mappings = self.load_product_mappings()
 
     @staticmethod
     def get_mysql_credentials():
-        """
-        Retrieve MySQL credentials from configuration file.
-        
-        Returns:
-            tuple[str, str]: Username and password for database connection
-        
-        Note:
-            Expects credentials in /etc/voipnow/.sqldb in format: sql:username:password
-        """
         with open("/etc/voipnow/.sqldb", "r") as file:
             data = file.read().strip()
             parts = data.split(":")
             return parts[1], parts[2]
 
-    def load_product_mappings(self) -> dict:
-        """
-        Load product mappings from E164_products table.
-        
-        Returns:
-            dict: Mapping of product codes to their database information
-        """
-        query = """
-            SELECT E164_product_id, E164_product_code, did_map, 
-                   product_name, billing_cost_setup, billing_cost_mrc
-            FROM E164_products 
-            WHERE did_map IS NOT NULL AND did_map != ''
-        """
-        self.cursor.execute(query)
-        mappings = {}
-        for row in self.cursor.fetchall():
-            mappings[row['E164_product_code']] = {
-                'id': row['E164_product_id'],
-                'did_map': row['did_map'],
-                'product_name': row['product_name'],
-                'default_setup': float(row['billing_cost_setup']),
-                'default_mrc': float(row['billing_cost_mrc'])
-            }
-        return mappings
-
     def determine_did_product(self, did_str: str) -> str:
-        """
-        Determine the product type for a given DID using database mappings.
-        
-        Args:
-            did_str (str): DID number to analyze
-            
-        Returns:
-            str: Product code or None if no match found
-        """
-        for product_code, mapping in self.product_mappings.items():
-            # Example for prefix matching
-            if did_str.startswith(mapping['did_map']):
-                return product_code
-        return None
+        print(f"Processing DID: {did_str}")
+        if did_str.startswith('6113') and len(did_str) == 8:
+            print(f"Matched AU-DID-13 for DID: {did_str}")
+            return 'AU-DID-13'
+        elif did_str.startswith('611300') and len(did_str) == 12:
+            print(f"Matched AU-DID-1300 for DID: {did_str}")
+            return 'AU-DID-1300'
+        elif did_str.startswith('611800') and len(did_str) == 12:
+            print(f"Matched AU-DID-1800 for DID: {did_str}")
+            return 'AU-DID-1800'
+        elif did_str.startswith('614') and len(did_str) == 11:
+            print(f"Matched AU-DIDMOB-1 for DID: {did_str}")
+            return 'AU-DIDMOB-1'
+        elif any(did_str.startswith(prefix) for prefix in ['612', '613', '617', '618']) and len(did_str) == 11:
+            print(f"Matched AU-DID-1 for DID: {did_str}")
+            return 'AU-DID-1'
+        print(f"No match found for DID: {did_str}, assigning DEFAULT-PLAN")
+        return 'DEFAULT-PLAN'
 
-    def get_product_pricing(self, product_code: str, owner_id: int) -> tuple[float, float]:
-        """
-        Get pricing information for a given product and owner.
-        
-        Args:
-            product_code (str): E164 product code
-            owner_id (int): Owner (carrier/reseller/client) ID
-            
-        Returns:
-            tuple[float, float]: Setup cost and MRC for the product
-        """
-        if product_code not in self.product_mappings:
-            return 0.0, 0.0
-            
-        product_id = self.product_mappings[product_code]['id']
-        
-        query = """
-            SELECT 
-                COALESCE(
-                    MAX(CASE WHEN reseller_id = %s THEN billing_cost_setup END),
-                    MAX(CASE WHEN reseller_id IS NULL THEN billing_cost_setup END)
-                ) as setup_cost,
-                COALESCE(
-                    MAX(CASE WHEN reseller_id = %s THEN billing_cost_mrc END),
-                    MAX(CASE WHEN reseller_id IS NULL THEN billing_cost_mrc END)
-                ) as mrc_cost
-            FROM E164_products
-            WHERE E164_product_id = %s
-        """
-        
-        self.cursor.execute(query, (owner_id, owner_id, product_id))
-        result = self.cursor.fetchone()
-        
-        if result and result['setup_cost'] is not None and result['mrc_cost'] is not None:
-            return float(result['setup_cost']), float(result['mrc_cost'])
-            
-        # Fall back to default pricing from mappings if no specific pricing found
-        mapping = self.product_mappings[product_code]
-        return mapping['default_setup'], mapping['default_mrc']
-
-    def should_charge_setup(self, mod_date: datetime, report_date: date) -> bool:
-        """
-        Determine if setup fee should be charged based on modification date.
-
-        Args:
-            mod_date (datetime): DID modification date
-            report_date (date): Date of the report
-
-        Returns:
-            bool: True if setup fee should be charged
-        """
-        if not mod_date:
-            return False
-
-        # Get the first day of the report month
-        report_month_start = report_date.replace(day=1)
-        # Get the first day of the month prior to the report date
-        prior_month_end = report_month_start - timedelta(days=1)
-        prior_month_start = prior_month_end.replace(day=1)
-
-        # Check if mod_date is within prior month
-        return prior_month_start <= mod_date.date() <= prior_month_end
+    def get_E164_product_info(self, did_product: str) -> tuple[int, int]:
+        if did_product == 'AU-DID-100':
+            return 4, 100
+        elif did_product == 'AU-DID-10':
+            return 3, 10
+        else:
+            return 1, 1
 
     def get_base_query(self) -> str:
-        """
-        Get base SQL query for DID retrieval based on customer type.
-        
-        Returns:
-            str: SQL query string
-        """
         if self.customer_type == 'CLIENT':
             return """
-                SELECT did, client_id as owner_id, cr_date, mod_date
+                SELECT did, client_id as owner_id, cr_date
                 FROM channel_did
                 WHERE client_id IS NOT NULL
                 ORDER BY client_id, CAST(did AS UNSIGNED)
             """
         else:  # Both RESELLER and CARRIER views use reseller_id
             return """
-                SELECT did, reseller_id as owner_id, cr_date, mod_date
+                SELECT did, reseller_id as owner_id, cr_date
                 FROM channel_did
                 WHERE reseller_id IS NOT NULL
                 ORDER BY reseller_id, CAST(did AS UNSIGNED)
             """
 
     def get_update_query(self) -> str:
-        """
-        Get SQL query for updating DID information based on customer type.
-        
-        Returns:
-            str: SQL query template string
-        """
         if self.customer_type == 'CLIENT':
             return """
                 UPDATE channel_did
-                SET E164_client_product = %s
+                SET E164_client_product = %s,
+                    E164_client_range_size = %s
                 WHERE client_id = %s AND {}
             """
-        else:
+        else:  # Both RESELLER and CARRIER views update reseller fields
             return """
                 UPDATE channel_did
-                SET E164_reseller_product = %s
+                SET E164_reseller_product = %s,
+                    E164_reseller_range_size = %s
                 WHERE reseller_id = %s AND {}
             """
 
-    def get_customer_name(self, owner_id: int) -> str:
-        """
-        Get customer name from database.
-        
-        Args:
-            owner_id (int): Owner (carrier/reseller/client) ID
-            
-        Returns:
-            str: Customer name
-        """
-        query = """
-            SELECT company 
-            FROM client 
-            WHERE id = %s
-        """
-        self.cursor.execute(query, (owner_id,))
-        result = self.cursor.fetchone()
-        return result['company'] if result else f"Unknown ({owner_id})"
-
-    def identify_ranges(self, dids, report_date: date):
-        """
-        Identify DID ranges from a list of DIDs.
-        
-        Args:
-            dids (list): List of DID records
-            report_date (date): Date of the report for setup fee calculation
-            
-        Returns:
-            list: Processed DID ranges and individual DIDs
-        """
+    def identify_ranges(self, dids):
         ranges = []
         current_range = []
         
         sorted_dids = sorted(dids, key=lambda x: (x['owner_id'], int(x['did'])))
+        print(f"Sorted DIDs: {sorted_dids}")
         
         for did_entry in sorted_dids:
+            print(f"Processing DID entry: {did_entry}")
             if did_entry['cr_date'] and did_entry['cr_date'].date() > self.cutoff_date:
+                print(f"Skipping DID {did_entry['did']} due to cutoff date")
                 continue
                 
             if not current_range:
@@ -287,121 +114,66 @@ class DIDHandler:
                 curr_did == prev_did + 1):
                 current_range.append(did_entry)
             else:
-                ranges.extend(self.process_range(current_range, report_date))
+                ranges.extend(self.process_range(current_range))
                 current_range = [did_entry]
         
         if current_range:
-            ranges.extend(self.process_range(current_range, report_date))
+            ranges.extend(self.process_range(current_range))
         
+        print(f"Identified ranges: {ranges}")
         return ranges
 
-    def process_range(self, range_entries, report_date: date):
-        """
-        Process a range of DIDs to determine their classification and pricing.
-        
-        Args:
-            range_entries (list): List of DIDs in a potential range
-            report_date (date): Date of the report for setup fee calculation
-            
-        Returns:
-            list: Processed DID range information including pricing
-        """
+    def process_range(self, range_entries):
         results = []
-        
-        first_did = range_entries[0]['did']
-        product_code = self.determine_did_product(first_did)
-        
-        for did_entry in range_entries:
-            if not product_code:
-                # Mark as exception
-                results.append({
-                    'did': did_entry['did'],
-                    'range_start': None,
-                    'range_end': None,
-                    'did_product': 'EXCEPTION',
-                    'owner_id': did_entry['owner_id'],
-                    'product_name': 'EXCEPTION',
-                    'setup': 0.0,
-                    'mrc': 0.0
-                })
-                continue
-            
-        if (product_code == 'AU-DID-100' and len(range_entries) >= 100) or \
-           (product_code == 'AU-DID-10' and len(range_entries) >= 10):
-            setup_cost, mrc_cost = self.get_product_pricing(product_code, range_entries[0]['owner_id'])
-            
-            should_setup = self.should_charge_setup(range_entries[0].get('mod_date'), report_date)
-            actual_setup = setup_cost if should_setup else 0.0
-            
+        print(f"Processing range: {range_entries}")
+        if len(range_entries) >= 100 and str(range_entries[0]['did']).endswith('00'):
+            e164_product, range_size = self.get_E164_product_info('AU-DID-100')
             results.append({
                 'did': range_entries[0]['did'],
                 'range_start': range_entries[0]['did'],
                 'range_end': range_entries[-1]['did'],
-                'did_product': product_code,
+                'did_product': 'AU-DID-100',
                 'owner_id': range_entries[0]['owner_id'],
-                'product_name': self.product_mappings[product_code]['product_name'],
-                'setup': actual_setup,
-                'mrc': mrc_cost
+                'E164_product': e164_product,
+                'range_size': range_size
+            })
+        elif len(range_entries) >= 10 and str(range_entries[0]['did']).endswith('0'):
+            e164_product, range_size = self.get_E164_product_info('AU-DID-10')
+            results.append({
+                'did': range_entries[0]['did'],
+                'range_start': range_entries[0]['did'],
+                'range_end': range_entries[-1]['did'],
+                'did_product': 'AU-DID-10',
+                'owner_id': range_entries[0]['owner_id'],
+                'E164_product': e164_product,
+                'range_size': range_size
             })
         else:
             for entry in range_entries:
-                product_code = self.determine_did_product(entry['did'])
-                if product_code:
-                    setup_cost, mrc_cost = self.get_product_pricing(product_code, entry['owner_id'])
-                    
-                    should_setup = self.should_charge_setup(entry.get('mod_date'), report_date)
-                    actual_setup = setup_cost if should_setup else 0.0
-                    
+                product = self.determine_did_product(entry['did'])
+                if product:
+                    e164_product, range_size = self.get_E164_product_info(product)
                     results.append({
                         'did': entry['did'],
                         'range_start': None,
                         'range_end': None,
-                        'did_product': product_code,
+                        'did_product': product,
                         'owner_id': entry['owner_id'],
-                        'product_name': self.product_mappings[product_code]['product_name'],
-                        'setup': actual_setup,
-                        'mrc': mrc_cost
+                        'E164_product': e164_product,
+                        'range_size': range_size
                     })
-        
-        return results
-
-    def process(self, report_date: date = None):
-        """
-        Process all DIDs and update database.
-        
-        Args:
-            report_date (date, optional): Report date for setup fee calculation
-            
-        Returns:
-            list: Processed DID results
-        """
-        if report_date is None:
-            report_date = self.cutoff_date
-
-        self.cursor.execute(self.get_base_query())
-        dids = self.cursor.fetchall()
-        results = self.identify_ranges(dids, report_date)
-        
-        if self.customer_type == 'CARRIER':
-            results = sorted(results, key=lambda x: (x['owner_id'], int(x['did'])))
-        
-        self.update_database(results)
+        print(f"Processed range results: {results}")
         return results
 
     def update_database(self, results):
-        """
-        Update database with processed DID information.
-        
-        Args:
-            results (list): Processed DID information to update
-        """
         for result in results:
             base_query = self.get_update_query()
             if result['range_start']:
                 where_clause = "CAST(did AS UNSIGNED) BETWEEN CAST(%s AS UNSIGNED) AND CAST(%s AS UNSIGNED)"
                 query = base_query.format(where_clause)
                 self.cursor.execute(query, (
-                    result['did_product'],
+                    result['E164_product'],
+                    result['range_size'],
                     result['owner_id'],
                     result['range_start'],
                     result['range_end']
@@ -410,220 +182,154 @@ class DIDHandler:
                 where_clause = "did = %s"
                 query = base_query.format(where_clause)
                 self.cursor.execute(query, (
-                    result['did_product'],
+                    result['E164_product'],
+                    result['range_size'],
                     result['owner_id'],
                     result['did']
                 ))
         
         self.db.commit()
 
-    def generate_summary(self, results):
-        """
-        Generate summary statistics from processed results.
+    def process(self):
+        print("Starting process method")
+        self.cursor.execute(self.get_base_query())
+        dids = self.cursor.fetchall()
+        print(f"Fetched DIDs: {dids}")
+        results = self.identify_ranges(dids)
         
-        Args:
-            results (list): Processed DID results
-            
-        Returns:
-            tuple[dict, list]: Summary statistics and list of product codes
-        """
+        # For carrier view, we want to aggregate the results differently
+        if self.customer_type == 'CARRIER':
+            results = sorted(results, key=lambda x: (x['owner_id'], int(x['did'])))
+        
+        self.update_database(results)
+        return results
+
+    def generate_summary(self, results):
+        """Generate summary statistics from results"""
         summary = {
+            'products': {},
             'total_dids': 0,
-            'total_setup': 0.0,
-            'total_mrc': 0.0,
-            'customers': {}
+            'total_owners': len(set(r['owner_id'] for r in results))
         }
         
-        product_codes = sorted(self.product_mappings.keys())
-        
         for result in results:
-            owner_id = result['owner_id']
+            # Count products
+            if result['did_product'] not in summary['products']:
+                summary['products'][result['did_product']] = 0
+            summary['products'][result['did_product']] += 1
             
-            if owner_id not in summary['customers']:
-                summary['customers'][owner_id] = {
-                    'name': self.get_customer_name(owner_id),
-                    'total_dids': 0,
-                    'total_setup': 0.0,
-                    'total_mrc': 0.0,
-                    'EXCEPTIONS': 0  # Initialize EXCEPTIONS count
-                }
-                for code in product_codes:
-                    summary['customers'][owner_id][code] = 0
-
-            num_dids = 1
+            # Count total DIDs (accounting for ranges)
             if result['range_end']:
                 start_num = int(result['range_start'])
                 end_num = int(result['range_end'])
-                num_dids = end_num - start_num + 1
-
-            customer = summary['customers'][owner_id]
-            customer['total_dids'] += num_dids
-            customer['total_setup'] += result['setup']
-            customer['total_mrc'] += result['mrc']
-
-            if result['did_product'] in product_codes:
-                customer[result['did_product']] += num_dids
-            elif result['did_product'] == 'EXCEPTION':
-                customer['EXCEPTIONS'] += 1
-
-            summary['total_dids'] += num_dids
-            summary['total_setup'] += result['setup']
-            summary['total_mrc'] += result['mrc']
+                summary['total_dids'] += (end_num - start_num + 1)
+            else:
+                summary['total_dids'] += 1
                 
-        return summary, product_codes
+        return summary
 
     def print_results(self, results):
-        """
-        Print results with detailed summary table.
-        
-        Args:
-            results (list): Processed DID results
-        """
-        # Print individual DID results
-        print(f"{'DID':<15} {'Range Start':<15} {'Range End':<15} {'Product':<20} "
-              f"{'Owner ID':<10} {'Setup':<10} {'MRC':<10}")
-        print("-" * 110)
-        
+        """Print results with summary table"""
+        # Print main results
+        print(f"{'DID':<15} {'Range Start':<15} {'Range End':<15} {'Product':<12} {'Owner ID':<10} {'E164 Product':<13} {'Range Size'}")
+        print("-" * 90)
         for result in results:
             print(f"{result['did']:<15} "
                   f"{str(result['range_start'] or ''):<15} "
                   f"{str(result['range_end'] or ''):<15} "
-                  f"{result['product_name'][:19]:<20} "
+                  f"{result['did_product']:<12} "
                   f"{str(result['owner_id']):<10} "
-                  f"${result['setup']:<9.2f} "
-                  f"${result['mrc']:<9.2f}")
-
-        # Collect exceptions
-        exceptions = [res for res in results if res['did_product'] == 'EXCEPTION']
-
-        # Print the exceptions list/table
-        if exceptions:
-            print("\nEXCEPTIONS")
-            print("-" * 80)
-            print(f"{'DID':<15} {'Owner ID':<10} {'Customer Name':<30}")
-            print("-" * 80)
-            for ex in exceptions:
-                owner_name = self.get_customer_name(ex['owner_id'])
-                print(f"{ex['did']:<15} {ex['owner_id']:<10} {owner_name:<30}")
-            print("-" * 80)
-            print(f"Total Exceptions: {len(exceptions)}\n")
-
-        # Generate and print the customer summary
-        summary, product_codes = self.generate_summary(results)
-
-        print("\nCUSTOMER SUMMARY")
-        print("-" * 150)
-
-        # Prepare the header
-        base_columns = ['Customer Name', 'ID', 'Setup', 'MRC', 'Total']
-        product_columns = [code for code in product_codes if code != 'EXCEPTION']
-        product_columns.append('EXCEPTIONS')
-
-        # Print header
-        header = (
-            f"{base_columns[0]:<25} {base_columns[1]:<6} {base_columns[2]:>10} "
-            f"{base_columns[3]:>10} {base_columns[4]:>8} "
-        )
-        for code in product_columns:
-            header += f"{code:>12} "
-        print(header)
-        print("-" * 150)
-
-        # Print each customer's details
-        for owner_id, customer in sorted(summary['customers'].items(), key=lambda x: x[1]['name'].lower()):
-            line = (
-                f"{customer['name'][:25]:<25} "
-                f"{owner_id:<6} "
-                f"${customer['total_setup']:>9.2f} "
-                f"${customer['total_mrc']:>9.2f} "
-                f"{customer['total_dids']:>8} "
-            )
-            for code in product_columns:
-                count = customer.get(code, 0)
-                line += f"{count:>12} "
-            print(line)
-
-        # Print overall totals
-        print("-" * 150)
-        total_line = (
-            f"{'TOTAL':<25} {'':<6} "
-            f"${summary['total_setup']:>9.2f} "
-            f"${summary['total_mrc']:>9.2f} "
-            f"{summary['total_dids']:>8} "
-        )
-        for code in product_columns:
-            total = sum(cust.get(code, 0) for cust in summary['customers'].values())
-            total_line += f"{total:>12} "
-        print(total_line)
+                  f"{str(result['E164_product']):<13} "
+                  f"{result['range_size']}")
+        
+        # Generate summary
+        summary = self.generate_summary(results)
+        
+        # Print summary table
+        print("\nSUMMARY")
+        print("-" * 50)
+        
+        # Print product counts
+        print("Products:")
+        for product, count in sorted(summary['products'].items()):
+            print(f"  {product:<15} {count:>8}")
+        
+        print("\nTotals:")
+        print(f"  {'Total DIDs:':<15} {summary['total_dids']:>8}")
+        owner_type = "Clients" if self.customer_type == 'CLIENT' else "Resellers" if self.customer_type == 'RESELLER' else "Carriers"
+        print(f"  {'Total ' + owner_type + ':':<15} {summary['total_owners']:>8}")
 
     def cleanup(self):
-        """Close database connections and cleanup resources."""
         self.cursor.close()
         self.db.close()
 
-
 def save_to_csv(results, filename):
-    """
-    Save results to CSV file.
-    
-    Args:
-        results (list): Results to save
-        filename (str): Output filename
-    """
-    fieldnames = [
-        'did', 'range_start', 'range_end', 'did_product', 'product_name',
-        'owner_id', 'setup', 'mrc'
-    ]
+    fieldnames = ['did', 'range_start', 'range_end', 'did_product', 'owner_id', 
+                 'E164_product', 'range_size']
     
     with open(filename, 'w', newline='') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(results)
 
+def save_to_json(results, filename):
+    with open(filename, 'w') as jsonfile:
+        json.dump(results, jsonfile, indent=2)
+
 def main():
-    """Main execution function."""
     parser = argparse.ArgumentParser(description="Process DIDs and identify ranges")
-    parser.add_argument("--customer-type", choices=['CLIENT', 'RESELLER', 'CARRIER'], 
-                      default='RESELLER', type=str.upper, help="Type of customer to process")
     parser.add_argument("-y", "--year", type=int, help="Year for cutoff date")
     parser.add_argument("-m", "--month", type=int, help="Month for cutoff date")
-    parser.add_argument("-d", "--day", type=int, default=1, help="Day for cutoff date")
-    parser.add_argument("--csv", help="Export to CSV file (provide filename)")
-    parser.add_argument("--json", help="Export to JSON file (provide filename)")
+    parser.add_argument("-d", "--day", type=int, help="Day for cutoff date")
+    parser.add_argument("--csv", nargs='?', const='', help="Export to CSV file (optional filename)")
+    parser.add_argument("--json", nargs='?', const='', help="Export to JSON file (optional filename)")
+    
+    # Add mutually exclusive group for customer type
+    customer_group = parser.add_mutually_exclusive_group()
+    customer_group.add_argument("--client", action="store_true", default=True, help="Process client DIDs (default)")
+    customer_group.add_argument("--reseller", action="store_true", help="Process reseller DIDs")
+    customer_group.add_argument("--carrier", action="store_true", help="Process carrier DIDs")
     
     args = parser.parse_args()
-    args.customer_type = args.customer_type.upper()
-    
-    # Set cutoff date
-    if args.year and args.month:
-        report_date = date(args.year, args.month, args.day)
-    else:
-        report_date = date.today()
-    
-    # Initialize handler
-    handler = DIDHandler(args.customer_type, report_date)
-    
-    try:
-        # Process DIDs
-        results = handler.process(report_date)
-        
-        # Export results if requested
-        if args.csv:
-            save_to_csv(results, args.csv)
-            print(f"Results exported to CSV: {args.csv}")
-            
-        if args.json:
-            with open(args.json, 'w') as f:
-                json.dump(results, f, indent=2, default=str)
-            print(f"Results exported to JSON: {args.json}")
-            
-        # Print results if no export specified
-        if not args.csv and not args.json:
-            handler.print_results(results)
-            
-    finally:
-        handler.cleanup()
 
+    # Determine customer type
+    customer_type = 'CLIENT'
+    if args.reseller:
+        customer_type = 'RESELLER'
+    elif args.carrier:
+        customer_type = 'CARRIER'
+
+    # Set cutoff date
+    if args.year and args.month and args.day:
+        cutoff_date = date(args.year, args.month, args.day)
+    else:
+        cutoff_date = date.today()
+
+    # Generate default filenames
+    date_str = datetime.now().strftime('%Y%m%d')
+    default_csv = f"{date_str}_{customer_type}_DID_RANGES.csv"
+    default_json = f"{date_str}_{customer_type}_DID_RANGES.json"
+
+    # Process DIDs
+    handler = DIDHandler(customer_type, cutoff_date)
+    results = handler.process()
+    
+    # Export results if requested
+    if args.csv is not None:
+        csv_filename = args.csv if args.csv else default_csv
+        save_to_csv(results, csv_filename)
+        print(f"Results exported to CSV: {csv_filename}")
+
+    if args.json is not None:
+        json_filename = args.json if args.json else default_json
+        save_to_json(results, json_filename)
+        print(f"Results exported to JSON: {json_filename}")
+
+    # Print results to console if no export options specified
+    if args.csv is None and args.json is None:
+        handler.print_results(results)
+
+    handler.cleanup()
 
 if __name__ == "__main__":
     main()
